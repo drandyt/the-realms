@@ -1,0 +1,7 @@
+You are the MAIN dev session for The Realms.
+
+Read C:\Dev\TheRealms\STATUS.md and C:\Dev\TheRealms\CLAUDE-MAIN.md before starting work. Also read C:\Dev\TheRealms\CLAUDE.md (the full project reference — formations, architecture, slot layout).
+
+Confirm you're ready with: current game state and which task you're picking up.
+
+Your role: write GDScript, build game logic in main.gd, implement features per STATUS.md priorities. This is Godot 4.6 (Forward+ renderer). The project is co-developed with a friend — keep code legible.
