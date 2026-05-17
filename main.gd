@@ -84,6 +84,14 @@ var slot_plasma_mat: Array  = []   # StandardMaterial3D or null
 var slot_plasma_color: Array = []  # Color or null
 var connections: Array       = []  # {a, b, stream_mat}
 
+# Opponent board (AI side) — logical state + visuals
+var opp_slot_contents: Array = []  # Dictionary or null
+var opp_connections: Array   = []  # {a, b, bridge}
+
+# Turn / game flow
+var _turn := "player"               # "player" or "opponent"
+var _game_over := false
+
 var _selected_card_node: Node3D     = null
 var _selected_card_data: Dictionary = {}
 var _has_selection      := false
@@ -105,8 +113,13 @@ var _cam: Camera3D
 var deck_label: Label
 var formation_label: Label
 var cast_btn: Button
+var draw_btn: Button
+var end_turn_btn: Button
 var hp_player_label: Label
 var hp_opp_label: Label
+var turn_label: Label
+var canvas: CanvasLayer
+var _overlay: Control
 
 
 func _ready() -> void:
@@ -128,6 +141,9 @@ func _ready() -> void:
 	slot_contents.resize(player_slots.size());   slot_contents.fill(null)
 	slot_plasma_mat.resize(player_slots.size());  slot_plasma_mat.fill(null)
 	slot_plasma_color.resize(player_slots.size()); slot_plasma_color.fill(null)
+	opp_slot_contents.resize(opponent_slots.size()); opp_slot_contents.fill(null)
+
+	_start_player_turn()
 
 
 # ── Environment ───────────────────────────────────────────────
@@ -250,15 +266,32 @@ func _setup_hand_zone(side: int) -> void:
 # ── UI ────────────────────────────────────────────────────────
 
 func _setup_ui() -> void:
-	var canvas := CanvasLayer.new();  add_child(canvas)
+	canvas = CanvasLayer.new();  add_child(canvas)
 
-	var btn := Button.new()
-	btn.text = "Draw 3";  btn.custom_minimum_size = Vector2(130, 48)
-	btn.anchor_left = 1.0;  btn.anchor_right  = 1.0
-	btn.anchor_top  = 1.0;  btn.anchor_bottom = 1.0
-	btn.offset_left = -150.0;  btn.offset_right  = -20.0
-	btn.offset_top  = -70.0;   btn.offset_bottom = -22.0
-	btn.pressed.connect(_on_draw_pressed);  canvas.add_child(btn)
+	draw_btn = Button.new()
+	draw_btn.text = "Draw Hand";  draw_btn.custom_minimum_size = Vector2(130, 48)
+	draw_btn.anchor_left = 1.0;  draw_btn.anchor_right  = 1.0
+	draw_btn.anchor_top  = 1.0;  draw_btn.anchor_bottom = 1.0
+	draw_btn.offset_left = -150.0;  draw_btn.offset_right  = -20.0
+	draw_btn.offset_top  = -70.0;   draw_btn.offset_bottom = -22.0
+	draw_btn.pressed.connect(_on_draw_pressed);  canvas.add_child(draw_btn)
+
+	end_turn_btn = Button.new()
+	end_turn_btn.text = "End Turn";  end_turn_btn.custom_minimum_size = Vector2(130, 48)
+	end_turn_btn.anchor_left = 1.0;  end_turn_btn.anchor_right  = 1.0
+	end_turn_btn.anchor_top  = 1.0;  end_turn_btn.anchor_bottom = 1.0
+	end_turn_btn.offset_left = -150.0;  end_turn_btn.offset_right  = -20.0
+	end_turn_btn.offset_top  = -128.0;  end_turn_btn.offset_bottom = -80.0
+	end_turn_btn.pressed.connect(_on_end_turn_pressed);  canvas.add_child(end_turn_btn)
+
+	turn_label = Label.new()
+	turn_label.anchor_left = 0.5;  turn_label.anchor_right = 0.5
+	turn_label.anchor_top  = 0.0;  turn_label.anchor_bottom = 0.0
+	turn_label.offset_left = -200.0;  turn_label.offset_right = 200.0
+	turn_label.offset_top  = 16.0;    turn_label.offset_bottom = 56.0
+	turn_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	turn_label.add_theme_font_size_override("font_size", 26)
+	canvas.add_child(turn_label)
 
 	deck_label = Label.new()
 	deck_label.anchor_left = 1.0;  deck_label.anchor_right  = 1.0
@@ -323,6 +356,7 @@ func _build_deck(target: Array[Dictionary]) -> void:
 
 
 func _on_draw_pressed() -> void:
+	if _turn != "player" or _game_over: return
 	_deselect_card()
 	for node in player_hand: node.queue_free()
 	player_hand.clear()
@@ -359,6 +393,7 @@ func _add_card_area(card: Node3D, data: Dictionary) -> void:
 
 
 func _on_card_input(_cam2, event, _pos, _normal, _idx, card: Node3D, data: Dictionary) -> void:
+	if _turn != "player" or _game_over: return
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		_select_card(card, data)
 
@@ -366,6 +401,7 @@ func _on_card_input(_cam2, event, _pos, _normal, _idx, card: Node3D, data: Dicti
 func _on_slot_input(_cam2, event, _pos, _normal, _idx, slot_idx: int) -> void:
 	if not (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT):
 		return
+	if _turn != "player" or _game_over: return
 	if not _has_selection: return
 	if _selected_card_data.get("type") == "connector":
 		_handle_connector_slot_click(slot_idx)
@@ -871,6 +907,7 @@ const ELEMENT_MULTIPLIER: Dictionary = {
 
 
 func _on_cast_pressed() -> void:
+	if _turn != "player" or _game_over: return
 	if not _has_active_formation: return
 	var fname: String = _active_formation["name"]
 	var base_dmg: int = FORMATION_BASE_DAMAGE.get(fname, 0)
@@ -896,7 +933,7 @@ func _on_cast_pressed() -> void:
 	formation_label.text = ""
 
 	if opponent_hp <= 0:
-		formation_label.text = "★  VICTORY  ★"
+		_end_game(true)
 
 
 func _refresh_hp_labels() -> void:
@@ -948,3 +985,254 @@ func _clear_player_board() -> void:
 		slot_plasma_mat[i]    = null
 		slot_plasma_color[i]  = null
 	connections.clear()
+
+
+# ── Turn flow ─────────────────────────────────────────────────
+
+func _set_buttons_enabled(on: bool) -> void:
+	draw_btn.disabled     = not on
+	end_turn_btn.disabled = not on
+	cast_btn.disabled     = (not on) or (not _has_active_formation)
+
+
+func _start_player_turn() -> void:
+	if _game_over: return
+	_turn = "player"
+	_clear_opponent_board()
+	_deal_player_hand()
+	_set_buttons_enabled(true)
+	turn_label.text = "YOUR TURN"
+
+
+func _deal_player_hand() -> void:
+	_deselect_card()
+	for node in player_hand: node.queue_free()
+	player_hand.clear()
+	if player_deck.size() < HAND_COUNT: _build_deck(player_deck)
+	var start_x := -(HAND_COUNT - 1) * HAND_SPACING / 2.0
+	for i in HAND_COUNT:
+		var data: Dictionary = player_deck.pop_back()
+		var card := _make_card(data)
+		card.position = Vector3(start_x + i * HAND_SPACING, 0.025, HAND_Z)
+		_add_card_area(card, data);  add_child(card);  player_hand.append(card)
+	deck_label.text = "Deck: %d" % player_deck.size()
+
+
+func _on_end_turn_pressed() -> void:
+	if _turn != "player" or _game_over: return
+	_deselect_card()
+	_clear_player_board()
+	_clear_active_formation()
+	formation_label.text = ""
+	_set_buttons_enabled(false)
+	_turn = "opponent"
+	turn_label.text = "OPPONENT TURN"
+	await _ai_turn()
+	if _game_over: return
+	_start_player_turn()
+
+
+# ── Simple AI ─────────────────────────────────────────────────
+
+func _draw_opp_element() -> Dictionary:
+	for _attempt in 40:
+		if opponent_deck.is_empty(): _build_deck(opponent_deck)
+		var data: Dictionary = opponent_deck.pop_back()
+		if data["type"] == "element": return data
+	return ELEMENTS[0]
+
+
+func _first_adjacent_pair(slots: Array) -> Array:
+	for a in slots:
+		for b in slots:
+			if _is_adjacent(a, b): return [a, b]
+	return []
+
+
+func _ai_turn() -> void:
+	_clear_opponent_board()
+	await get_tree().create_timer(0.4).timeout
+
+	# Pick a target formation to build (mostly offensive)
+	var targets := [[1,2,5,6], [4,7,1,2], [0,1,2,3], [0,3,5,6], [0,4,3,7], [1,5]]
+	var target: Array = targets[randi() % targets.size()]
+
+	for i in target:
+		if opp_slot_contents[i] != null: continue
+		var data := _draw_opp_element()
+		opp_slot_contents[i] = data
+		_spawn_plasma(opponent_slots[i], data, -1)
+		await get_tree().create_timer(0.30).timeout
+
+	var pair := _first_adjacent_pair(target)
+	if pair.size() == 2:
+		_spawn_opp_bridge(pair[0], pair[1])
+		await get_tree().create_timer(0.45).timeout
+
+	var best := _opp_best_formation()
+	if not best.is_empty():
+		turn_label.text = "OPPONENT CASTS %s" % str(best["spell"]).to_upper()
+		await get_tree().create_timer(0.5).timeout
+		_ai_cast(best)
+	else:
+		await get_tree().create_timer(0.3).timeout
+
+
+func _spawn_opp_bridge(idx_a: int, idx_b: int) -> void:
+	var pos_a := opponent_slots[idx_a].global_position
+	var pos_b := opponent_slots[idx_b].global_position
+	var mid   := (pos_a + pos_b) * 0.5
+	var dist  := pos_a.distance_to(pos_b)
+	var dir   := (pos_b - pos_a).normalized()
+
+	var trough := MeshInstance3D.new();  var tm := BoxMesh.new()
+	tm.size = Vector3(0.20, 0.026, dist - 0.18);  trough.mesh = tm
+	var tmat := StandardMaterial3D.new()
+	tmat.albedo_color = Color(0.20,0.14,0.16);  tmat.metallic = 0.8;  tmat.roughness = 0.3
+	trough.set_surface_override_material(0, tmat)
+
+	var stream := MeshInstance3D.new();  var sm := BoxMesh.new()
+	sm.size = Vector3(0.07, 0.032, dist - 0.20);  stream.mesh = sm
+	var smat := StandardMaterial3D.new()
+	smat.albedo_color = Color(0.95,0.40,0.40);  smat.emission_enabled = true
+	smat.emission = Color(0.90,0.25,0.25);  smat.emission_energy_multiplier = 3.0;  smat.roughness = 0.1
+	stream.set_surface_override_material(0, smat);  stream.position.y = 0.005
+
+	var bridge := Node3D.new()
+	bridge.position = Vector3(mid.x, 0.09, mid.z)
+	bridge.rotation.y = atan2(dir.x, dir.z)
+	add_child(bridge);  bridge.add_child(trough);  bridge.add_child(stream)
+
+	opp_connections.append({"a": idx_a, "b": idx_b, "bridge": bridge})
+
+	bridge.scale = Vector3(1.0, 0.0, 1.0)
+	var t := create_tween().set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_BACK)
+	t.tween_property(bridge, "scale", Vector3.ONE, 0.4)
+	await t.finished
+
+
+func _opp_best_formation() -> Dictionary:
+	var best: Dictionary = {}
+	var best_score := -1
+	for formation in FORMATIONS:
+		var fslots: Array = formation["slots"]
+		var all_filled := true
+		for i in fslots:
+			if opp_slot_contents[i] == null:
+				all_filled = false;  break
+		if not all_filled: continue
+		var connected := false
+		for conn in opp_connections:
+			if conn["a"] in fslots and conn["b"] in fslots:
+				connected = true;  break
+		if not connected: continue
+
+		var counts: Dictionary = {}
+		for i in fslots:
+			var eid: String = opp_slot_contents[i]["id"]
+			counts[eid] = counts.get(eid, 0) + 1
+		var dominant := ""
+		var top := 0
+		for k in counts:
+			if counts[k] > top:  top = counts[k];  dominant = k
+
+		var fname: String = formation["name"]
+		var base_dmg: int = FORMATION_BASE_DAMAGE.get(fname, 0)
+		var mult: float   = ELEMENT_MULTIPLIER.get(dominant, 1.0)
+		var damage: int   = int(round(base_dmg * mult))
+		var shield: int   = FORMATION_SHIELD.get(fname, 0)
+		var score: int    = damage if damage > 0 else int(shield * 0.5)
+		if score > best_score:
+			var spell_key := fname + "_" + dominant
+			best_score = score
+			best = {
+				"formation": formation, "dominant": dominant,
+				"damage": damage, "shield": shield,
+				"spell": SPELLS.get(spell_key, dominant.capitalize() + " " + fname),
+			}
+	return best
+
+
+func _ai_cast(best: Dictionary) -> void:
+	var damage: int = best["damage"]
+	var shield: int = best["shield"]
+	if damage > 0:
+		var absorbed: int = min(player_shield, damage)
+		player_shield -= absorbed
+		var net: int = damage - absorbed
+		player_hp = max(0, player_hp - net)
+		_flash_damage_on_player(net, best["spell"])
+	if shield > 0:
+		opponent_shield += shield
+	_refresh_hp_labels()
+	if player_hp <= 0:
+		_end_game(false)
+
+
+func _flash_damage_on_player(dmg: int, label: String) -> void:
+	var lbl := Label3D.new()
+	lbl.text = "-%d  %s" % [dmg, label]
+	lbl.font_size = 48;  lbl.pixel_size = 0.005
+	lbl.modulate = Color(1.0, 0.3, 0.3)
+	lbl.outline_size = 8;  lbl.outline_modulate = Color.BLACK
+	lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	lbl.position = Vector3(0, 1.2, 1.6)
+	add_child(lbl)
+	var t := create_tween().set_parallel(true)
+	t.tween_property(lbl, "position:y", 2.4, 1.0)
+	t.tween_property(lbl, "modulate:a", 0.0, 1.0).set_delay(0.4)
+	t.chain().tween_callback(lbl.queue_free)
+
+
+func _clear_opponent_board() -> void:
+	for slot in opponent_slots:
+		for child in slot.get_children():
+			if child is MeshInstance3D and child.mesh is SphereMesh:
+				child.queue_free()
+	for conn in opp_connections:
+		var b = conn.get("bridge")
+		if b != null and is_instance_valid(b):
+			b.queue_free()
+	for i in opp_slot_contents.size():
+		opp_slot_contents[i] = null
+	opp_connections.clear()
+
+
+# ── Game over / restart ───────────────────────────────────────
+
+func _end_game(player_won: bool) -> void:
+	_game_over = true
+	_set_buttons_enabled(false)
+	_deselect_card()
+
+	_overlay = ColorRect.new()
+	_overlay.color = Color(0, 0, 0, 0.7)
+	_overlay.anchor_right = 1.0;  _overlay.anchor_bottom = 1.0
+	_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	canvas.add_child(_overlay)
+
+	var msg := Label.new()
+	msg.text = "★  VICTORY  ★" if player_won else "DEFEAT"
+	msg.anchor_left = 0.5;  msg.anchor_right = 0.5
+	msg.anchor_top  = 0.5;  msg.anchor_bottom = 0.5
+	msg.offset_left = -300.0;  msg.offset_right = 300.0
+	msg.offset_top  = -90.0;   msg.offset_bottom = -30.0
+	msg.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	msg.add_theme_font_size_override("font_size", 56)
+	msg.add_theme_color_override("font_color",
+		Color(1.0, 0.85, 0.2) if player_won else Color(1.0, 0.35, 0.35))
+	_overlay.add_child(msg)
+
+	var restart := Button.new()
+	restart.text = "Play Again"
+	restart.custom_minimum_size = Vector2(200, 56)
+	restart.anchor_left = 0.5;  restart.anchor_right = 0.5
+	restart.anchor_top  = 0.5;  restart.anchor_bottom = 0.5
+	restart.offset_left = -100.0;  restart.offset_right = 100.0
+	restart.offset_top  = 20.0;    restart.offset_bottom = 76.0
+	restart.pressed.connect(_on_restart_pressed)
+	_overlay.add_child(restart)
+
+
+func _on_restart_pressed() -> void:
+	get_tree().reload_current_scene()
