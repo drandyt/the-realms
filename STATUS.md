@@ -1,5 +1,5 @@
 # THE REALMS — PROJECT STATUS
-_Last updated: 2026-05-17 — Duty MGR turn-system audit: feature already complete in master; STATUS reconciled._
+_Last updated: 2026-05-17 — Duty MGR full audit-and-reconcile: docs were systematically under-reporting. Milestones 1–3 confirmed COMPLETE in master by direct code read; magic/spirit layer is far beyond "foundation". STATUS rewritten to match code._
 
 ---
 
@@ -13,6 +13,26 @@ _Last updated: 2026-05-17 — Duty MGR turn-system audit: feature already comple
 ---
 
 ## Duty MGR log
+
+### 2026-05-17 — Full audit-and-reconcile (Director Duty MGR, one-shot)
+- **Brief:** docs known to be systematically stale; STATUS under-reporting real progress across multiple commits. Determine TRUE state by reading `main.gd` and rewrite STATUS to match reality exactly. Audit + doc only — no game code touched.
+- **Method:** read `main.gd` (~1818 lines) by section + targeted greps. No runtime/in-editor test — findings are from code inspection.
+- **Git status (verbatim):** `?? .claude/` — only the untracked harness `.claude/` dir. No tracked changes, no foreign uncommitted work. Not staged/touched.
+- **Per-milestone TRUE state vs prior STATUS claim:**
+  - **M1 Working prototype** — ✅ Done. Matches claim.
+  - **M2 Turn system + basic AI** — ✅ Done. Matches the prior (corrected) claim. Off-turn lock on every input/cast entry; centred turn indicator; `_ai_turn()` (1389) picks a target formation, fills slots, spawns a bridge, scores all formations via `_opp_best_formation()` (1451) and casts the best (`_ai_cast`, 1493).
+  - **M3 Full game loop (win/lose, restart)** — ✅ **DONE.** STATUS previously said "Not started" — this was wrong. `_end_game(player_won)` (1540) sets `_game_over`, disables buttons, draws a full-screen overlay with VICTORY/DEFEAT and a "Play Again" button → `_on_restart_pressed()` (1574) → `get_tree().reload_current_scene()`. Win/lose triggers wired: AI cast → `_end_game(false)` on player HP 0; magic/spirit casts → `_end_game(true)` on opponent HP 0; Spirit "Ascendant" is an instant-win.
+  - **M4 Polish (sound, particles, hover preview)** — Not started. Confirmed: ZERO audio (no `AudioStreamPlayer`/`.play()`), ZERO particles (no GPU/CPUParticles — all feedback is `create_tween` label/scale animation), NO hover preview (card interaction is click-select only; no `mouse_entered`/`mouse_exited`/hover logic).
+- **Magic / Spiritual layer — major doc correction:** STATUS called it a "foundation". It is substantially implemented: `_place_layer_element` with Essence cost (1609), essence banking via Earth casts (`player_essence += geom * ess_mult`, 1237), free-form connectors `_handle_layer_connector` (1636), curved Bézier bridges `_spawn_curved_bridge` (1661), largest-shape formation detection `_check_layer_formation` (1696), magic cast `_on_cast_magic_pressed` (1753) with element multipliers, **Conflux** formation unlocks the spiritual layer (`_unlock_spiritual`, 1793), spirit cast `_on_cast_spirit_pressed` (1772) incl. **Ascendant** instant-win. Always-available Spellbook panel (`_setup_spellbook`, 529).
+- **Files touched:** STATUS.md ONLY (this log + state/milestone/priorities below). `main.gd` NOT modified — audit-and-doc task, hard rail respected.
+- **Commit:** see git below (STATUS.md-only commit, explicit pathspec).
+- **Genuinely NOT done (honest list, no priority call — principal decides):**
+  - Sound effects — entirely absent.
+  - Particle effects — entirely absent (tween animation only).
+  - Hover preview — entirely absent.
+  - AI sophistication — `_ai_turn` picks from a fixed target list and never uses the magic/spirit layers; no difficulty scaling. Functional but basic (this is expected scope, noted not as a defect).
+  - All findings are code-read only; **a human should verify M3 end-screen + magic/spirit casting in-editor at runtime** before treating "Done" as battle-tested.
+- **Open:** prior Duty MGR (turn-system, commit 4d6d9df) correctly flagged the Director's stale premise. This audit confirms the staleness was broader — M3 and the magic/spirit depth were also under-reported. Recommend the Director treat The Realms as "M1–M3 complete in master, M4 polish remaining" going forward.
 
 ### 2026-05-17 — Turn system (Director Duty MGR, one-shot)
 - **Brief:** implement the turn system (turn state, alternating turns, End Turn affordance, lock placement/cast off-turn, on-screen turn indicator).
@@ -31,23 +51,27 @@ _Last updated: 2026-05-17 — Duty MGR turn-system audit: feature already comple
 ---
 
 ## Current State (as of 2026-05-17)
-Working prototype in a single file (`main.gd`, ~1818 lines):
+Single-file game in `main.gd` (~1818 lines). State below verified by code read (not runtime):
 - ✅ 3D table, two-player slot grid (2×4 each side)
 - ✅ 9 element types with procedural icons
-- ✅ Deck / hand / draw system
+- ✅ Deck / hand / draw / recycle system
 - ✅ Card-to-slot placement (plasma spheres)
 - ✅ Connector cards linking adjacent slots
 - ✅ Plasma merge (colour blending)
-- ✅ Formation detection (10 formations) + cast system
-- ✅ HP tracking, damage / shield labels
-- ✅ **Turn system — `_turn` state, End Turn button, full off-turn lock on placement/cast, turn indicator label** (already in master; verified 2026-05-17)
-- ✅ Opponent AI — `_ai_turn()` builds a formation and casts (basic, already in master)
-- ✅ Magic / Spiritual layers + Essence + recycling deck (foundation)
-- ❌ Win/lose screen
-- ❌ Sound effects
-- ❌ Particle effects
+- ✅ Formation detection (FORMATIONS table) + cast system, named spells
+- ✅ HP / shield tracking, damage / shield 3D labels
+- ✅ Turn system — `_turn` state, End Turn button, full off-turn lock on every input/cast, centred turn indicator
+- ✅ Opponent AI — `_ai_turn()` builds a target formation, bridges, scores all formations, casts the best (`_ai_cast`)
+- ✅ **Win/lose + restart — `_end_game()` full-screen VICTORY/DEFEAT overlay with "Play Again" → `reload_current_scene()`; win/lose triggers fully wired**
+- ✅ **Magic / Spiritual layer — NOT just a foundation:** Essence economy + banking, free-form connectors, curved bridges, formation detection, magic & spirit casting with multipliers, Conflux unlocks the spiritual layer, Ascendant instant-win
+- ✅ Always-available Spellbook reference panel
+- ❌ Sound effects (entirely absent)
+- ❌ Particle effects (entirely absent — feedback is tween label/scale animation)
+- ❌ Hover preview (entirely absent — click-select only)
 
-**Architecture note:** Everything in `main.gd`. Good for prototype; will need splitting as complexity grows. Do not rush the split — wait until the turn system + AI skeleton is in place.
+**Architecture note:** Everything in `main.gd` (single file by design — do NOT split). Good for prototype; revisit splitting only with the human co-dev's agreement.
+
+**Verification caveat:** all of the above is from reading the code, not running it. A human should confirm the M3 end-screen and magic/spirit casting in-editor at runtime before treating them as battle-tested.
 
 ---
 
@@ -55,9 +79,9 @@ Working prototype in a single file (`main.gd`, ~1818 lines):
 | # | Milestone | Status |
 |---|-----------|--------|
 | 1 | Working prototype (single-file) | ✅ Done |
-| 2 | Turn system + basic opponent AI | ✅ Done (verified 2026-05-17 — already in master) |
-| 3 | Full game loop (win/lose, restart) | Not started |
-| 4 | Polish (sound, particles, hover preview) | Not started |
+| 2 | Turn system + basic opponent AI | ✅ Done (verified 2026-05-17 — in master) |
+| 3 | Full game loop (win/lose, restart) | ✅ Done (verified 2026-05-17 — `_end_game` + restart in master; STATUS previously said "Not started" — that was wrong) |
+| 4 | Polish (sound, particles, hover preview) | Not started (all three confirmed absent in code) |
 
 ---
 
@@ -75,10 +99,13 @@ _None on record yet._
 ---
 
 ## Next Priorities
-1. **Win/lose screen** — proper end state with restart (`_end_game()` exists; needs UI + restart)
-2. **AI hardening** — current `_ai_turn()` is basic; improve legal-move selection / difficulty
-3. **Polish** — sound, particles, hover preview
-_(Turn system + basic AI complete in master as of 2026-05-17.)_
+_M1–M3 complete in master. Remaining work is M4 polish + verification. Priority order is the principal's call — listed here as candidate open items, not a ranking:_
+- **Runtime verification** — human plays through in-editor to confirm M3 end-screen and magic/spirit casting behave as the code implies.
+- **Sound effects** — none exist.
+- **Particle effects** — none exist (currently tween animation only).
+- **Hover preview** — none exists (click-select only).
+- **AI sophistication** (optional) — `_ai_turn()` uses a fixed target list, never the magic/spirit layers, no difficulty scaling. Functional; enhancement, not a defect.
+_(Audit-and-reconcile 2026-05-17: docs were systematically under-reporting; M3 and magic/spirit depth corrected.)_
 
 ---
 
