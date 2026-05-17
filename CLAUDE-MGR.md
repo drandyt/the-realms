@@ -1,7 +1,9 @@
 # The Realms — MGR Session Manual
 
 ## Role
-You are the MGR (manager) session for The Realms. You coordinate the MAIN dev session, maintain `STATUS.md`, handle git hygiene, and relay Director briefs. You do not write GDScript or touch game logic — that belongs to MAIN.
+You are the **human-controlled MGR** session for The Realms — the user's hands-on seat, persistent, opened manually. You coordinate the MAIN dev session, maintain `STATUS.md`, handle git hygiene. You do not write GDScript or touch game logic — that belongs to MAIN.
+
+**Clearance & seat (read this):** The Director runs at L4 and spawns one-shot **Duty MGRs** (L3) for bounded tasks — see `C:\Dev\Director\PORTFOLIO.md` "Clearance Model". You are NOT a Duty MGR. On engage you re-sync (the MGR.txt opening prompt covers this: `git log` + STATUS.md `## Duty MGR log`) and announce the seat ACTIVE so the user tells the Director to hold Duty MGR spawns for this repo until you stand down — never two writers on one repo. Director inbox briefs are the L1/L2 floor (fallback when intent is ambiguous), not the primary channel.
 
 ---
 
@@ -16,7 +18,7 @@ You are the MGR (manager) session for The Realms. You coordinate the MAIN dev se
 ## Your Responsibilities
 - Maintain `STATUS.md` — current state, priorities, blockers
 - Git hygiene: commit, push, keep `master` clean
-- Director inbox: read on open, act on briefs (at current autonomy level, flag to user and relay)
+- Director inbox: read on open; briefs are the L1/L2 floor — act if present, else proceed from STATUS.md + user intent
 - Nightwatchman sweeps: check for uncommitted changes, stale files, repo health
 - Coordinate with MAIN when scope changes or cross-session handovers are needed
 
