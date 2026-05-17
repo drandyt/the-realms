@@ -124,6 +124,55 @@ var _overlay: Control
 var book_btn: Button
 var book_panel: Control
 
+# ── Magic / Spiritual layers (foundation) ─────────────────────
+const MAGIC_Y       := 0.78
+const SPIRIT_Y      := 1.52
+const MAGIC_COST     := 6     # essence to place one magic element
+const SPIRIT_COST    := 10    # essence to place one spiritual element
+const ELEMENT_POOL   := 24    # finite recycling element pool size
+
+var magic_player_slots: Array[Node3D]  = []
+var magic_opp_slots: Array[Node3D]     = []
+var spirit_player_slots: Array[Node3D] = []
+var spirit_opp_slots: Array[Node3D]    = []
+
+var m_slot_contents: Array = []   # player magic cup contents
+var m_connections: Array   = []   # {a, b, bridge}
+var s_slot_contents: Array = []   # player spiritual cup contents
+var s_connections: Array   = []
+
+var player_essence   := 0
+var opponent_essence := 0
+var spirit_unlocked  := false
+
+# Cast power dial: 0 Full (100% dmg, 0 build) · 1 Half (50% dmg, +build) · 2 Channel (0 dmg, ++build)
+var cast_power := 0
+const POWER_NAMES := ["FULL POWER", "HALF / BUILD", "CHANNEL ALL"]
+
+var essence_label: Label
+var power_btn: Button
+var cast_magic_btn: Button
+var cast_spirit_btn: Button
+var spirit_label: Label
+
+var _m_connector_slot1 := -1
+var _s_connector_slot1 := -1
+var _active_m_formation: Dictionary = {}
+var _active_s_formation: Dictionary = {}
+var _active_m_spell := ""
+var _active_s_spell := ""
+
+# Magic formations — index sets over the 8 magic cups (same 0..7 grid)
+const MAGIC_FORMATIONS: Array[Dictionary] = [
+	{ "name": "Sigil",      "slots": [1,2,5,6],         "dmg": 22, "effect": "Arcane burst" },
+	{ "name": "Vortex",     "slots": [0,3,4,7],         "dmg": 26, "effect": "Spiralling ruin" },
+	{ "name": "Conflux",    "slots": [0,1,2,3,4,5,6,7], "dmg": 0,  "effect": "Opens the Spiritual layer" },
+]
+const SPIRIT_FORMATIONS: Array[Dictionary] = [
+	{ "name": "Ascendant", "slots": [0,1,2,3,4,5,6,7], "dmg": 999, "effect": "Unmaking — ends the game" },
+	{ "name": "Pillar",    "slots": [0,1,2,3],         "dmg": 45,  "effect": "Heaven's spear" },
+]
+
 
 func _ready() -> void:
 	get_viewport().physics_object_picking = true
@@ -141,10 +190,17 @@ func _ready() -> void:
 	_build_deck(opponent_deck)
 	_deal_opponent_hand()
 
+	_setup_layer_slots(1,  magic_player_slots,  MAGIC_Y,  Color(0.55,0.25,0.85), true)
+	_setup_layer_slots(-1, magic_opp_slots,    MAGIC_Y,  Color(0.55,0.25,0.85), false)
+	_setup_layer_slots(1,  spirit_player_slots, SPIRIT_Y, Color(1.0,0.92,0.55), true, true)
+	_setup_layer_slots(-1, spirit_opp_slots,    SPIRIT_Y, Color(1.0,0.92,0.55), false, true)
+
 	slot_contents.resize(player_slots.size());   slot_contents.fill(null)
 	slot_plasma_mat.resize(player_slots.size());  slot_plasma_mat.fill(null)
 	slot_plasma_color.resize(player_slots.size()); slot_plasma_color.fill(null)
 	opp_slot_contents.resize(opponent_slots.size()); opp_slot_contents.fill(null)
+	m_slot_contents.resize(8); m_slot_contents.fill(null)
+	s_slot_contents.resize(8); s_slot_contents.fill(null)
 
 	_start_player_turn()
 
@@ -237,6 +293,44 @@ func _cup_part(p: Node3D, mat: StandardMaterial3D, tr: float, br: float, h: floa
 	cm.top_radius = tr;  cm.bottom_radius = br;  cm.height = h;  cm.radial_segments = 32
 	mi.mesh = cm;  mi.set_surface_override_material(0, mat);  mi.position = pos
 	p.add_child(mi)
+
+
+# ── Elevated layer cups (Magic / Spiritual) ───────────────────
+
+func _setup_layer_slots(side: int, out_slots: Array[Node3D], y: float,
+		tint: Color, interactive: bool, hidden := false) -> void:
+	var start_x := -(COLS - 1) * SLOT_GAP_X / 2.0
+	var layer := "spirit" if y > 1.0 else "magic"
+	for row in ROWS:
+		for col in COLS:
+			var root := Node3D.new()
+			root.position = Vector3(
+				start_x + col * SLOT_GAP_X, y,
+				side * (SLOT_NEAR_Z + row * SLOT_GAP_Z))
+			if side < 0: root.rotation_degrees.y = 180.0
+			if hidden: root.visible = false
+			add_child(root);  out_slots.append(root)
+			_build_crystal_cup(root, tint)
+			if interactive:
+				var area := Area3D.new()
+				var shape := CollisionShape3D.new()
+				var cyl := CylinderShape3D.new();  cyl.radius = 0.30;  cyl.height = 0.40
+				shape.shape = cyl;  shape.position.y = 0.10
+				area.add_child(shape)
+				area.input_event.connect(_on_layer_slot_input.bind(layer, out_slots.size() - 1))
+				root.add_child(area)
+
+
+func _build_crystal_cup(parent: Node3D, tint: Color) -> void:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = tint.darkened(0.3)
+	mat.metallic = 0.4;  mat.roughness = 0.15
+	mat.emission_enabled = true;  mat.emission = tint;  mat.emission_energy_multiplier = 0.5
+	_cup_part(parent, mat, 0.24, 0.10, 0.16, Vector3(0, 0.08, 0))
+	var rim := StandardMaterial3D.new()
+	rim.albedo_color = tint;  rim.emission_enabled = true
+	rim.emission = tint;  rim.emission_energy_multiplier = 1.4;  rim.roughness = 0.2
+	_cup_part(parent, rim, 0.25, 0.25, 0.02, Vector3(0, 0.165, 0))
 
 
 # ── Deck piles ────────────────────────────────────────────────
@@ -344,7 +438,92 @@ func _setup_ui() -> void:
 	canvas.add_child(hp_player_label)
 
 	_setup_spellbook()
+	_setup_layer_ui()
 	_refresh_hp_labels()
+
+
+func _setup_layer_ui() -> void:
+	essence_label = Label.new()
+	essence_label.anchor_left = 0.0;  essence_label.anchor_top = 0.0
+	essence_label.offset_left = 20.0; essence_label.offset_top = 64.0
+	essence_label.offset_right = 320.0; essence_label.offset_bottom = 92.0
+	essence_label.add_theme_font_size_override("font_size", 18)
+	essence_label.add_theme_color_override("font_color", Color(0.8, 0.6, 1.0))
+	canvas.add_child(essence_label)
+
+	spirit_label = Label.new()
+	spirit_label.anchor_left = 0.0;  spirit_label.anchor_top = 0.0
+	spirit_label.offset_left = 20.0; spirit_label.offset_top = 92.0
+	spirit_label.offset_right = 360.0; spirit_label.offset_bottom = 118.0
+	spirit_label.add_theme_font_size_override("font_size", 16)
+	spirit_label.add_theme_color_override("font_color", Color(1.0, 0.92, 0.55))
+	canvas.add_child(spirit_label)
+
+	power_btn = Button.new()
+	power_btn.custom_minimum_size = Vector2(160, 40)
+	power_btn.anchor_left = 0.5;  power_btn.anchor_right = 0.5
+	power_btn.anchor_top  = 1.0;  power_btn.anchor_bottom = 1.0
+	power_btn.offset_left = -80.0;  power_btn.offset_right = 80.0
+	power_btn.offset_top  = -118.0; power_btn.offset_bottom = -78.0
+	power_btn.pressed.connect(_on_power_pressed)
+	canvas.add_child(power_btn)
+
+	cast_magic_btn = Button.new()
+	cast_magic_btn.text = "CAST MAGIC"
+	cast_magic_btn.custom_minimum_size = Vector2(150, 48)
+	cast_magic_btn.anchor_left = 0.5;  cast_magic_btn.anchor_right = 0.5
+	cast_magic_btn.anchor_top  = 1.0;  cast_magic_btn.anchor_bottom = 1.0
+	cast_magic_btn.offset_left = -250.0;  cast_magic_btn.offset_right = -100.0
+	cast_magic_btn.offset_top  = -64.0;   cast_magic_btn.offset_bottom = -16.0
+	cast_magic_btn.disabled = true
+	cast_magic_btn.pressed.connect(_on_cast_magic_pressed)
+	canvas.add_child(cast_magic_btn)
+
+	cast_spirit_btn = Button.new()
+	cast_spirit_btn.text = "CAST SPIRIT"
+	cast_spirit_btn.custom_minimum_size = Vector2(150, 48)
+	cast_spirit_btn.anchor_left = 0.5;  cast_spirit_btn.anchor_right = 0.5
+	cast_spirit_btn.anchor_top  = 1.0;  cast_spirit_btn.anchor_bottom = 1.0
+	cast_spirit_btn.offset_left = 100.0;  cast_spirit_btn.offset_right = 250.0
+	cast_spirit_btn.offset_top  = -64.0;  cast_spirit_btn.offset_bottom = -16.0
+	cast_spirit_btn.disabled = true
+	cast_spirit_btn.pressed.connect(_on_cast_spirit_pressed)
+	canvas.add_child(cast_spirit_btn)
+
+	_refresh_essence_label()
+	_update_power_btn()
+
+
+func _update_power_btn() -> void:
+	power_btn.text = "Cast Power: %s" % POWER_NAMES[cast_power]
+
+
+func _on_power_pressed() -> void:
+	if _turn != "player" or _game_over: return
+	cast_power = (cast_power + 1) % 3
+	_update_power_btn()
+
+
+func _refresh_essence_label() -> void:
+	essence_label.text = "✦ ESSENCE  %d   (magic %d · spirit %d)" % [
+		player_essence, MAGIC_COST, SPIRIT_COST]
+	spirit_label.text = "SPIRITUAL LAYER: %s" % (
+		"OPEN" if spirit_unlocked else "sealed — form Conflux on Magic")
+
+
+func _flash_essence(amt: int) -> void:
+	var lbl := Label3D.new()
+	lbl.text = "+%d ✦ ESSENCE" % amt
+	lbl.font_size = 40;  lbl.pixel_size = 0.005
+	lbl.modulate = Color(0.8, 0.55, 1.0)
+	lbl.outline_size = 8;  lbl.outline_modulate = Color.BLACK
+	lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	lbl.position = Vector3(1.4, 1.0, 1.6)
+	add_child(lbl)
+	var t := create_tween().set_parallel(true)
+	t.tween_property(lbl, "position:y", 2.2, 1.0)
+	t.tween_property(lbl, "modulate:a", 0.0, 1.0).set_delay(0.4)
+	t.chain().tween_callback(lbl.queue_free)
 
 
 func _setup_spellbook() -> void:
@@ -393,6 +572,33 @@ func _build_book_text() -> String:
 	s += "  then press CAST.\n"
 	s += "• Press End Turn to let the opponent act.\n"
 	s += "• Start LIFE: %d each.\n\n" % START_LIFE
+	s += "THE THREE LAYERS\n"
+	s += "────────────────────────\n"
+	s += "EARTH (table): attack/defence formations.\n"
+	s += "MAGIC (mid, purple): costs %d Essence/cup.\n" % MAGIC_COST
+	s += "  Connectors CURVE — link ANY two cups.\n"
+	s += "SPIRIT (top, gold): costs %d Essence/cup.\n" % SPIRIT_COST
+	s += "  Sealed until you form CONFLUX on Magic.\n\n"
+	s += "ESSENCE — feeding the climb\n"
+	s += "────────────────────────\n"
+	s += "Use the Cast Power dial before an Earth cast:\n"
+	s += "• FULL   — full damage, no Essence.\n"
+	s += "• HALF   — half damage, Essence = shape size.\n"
+	s += "• CHANNEL— no damage, double Essence.\n"
+	s += "Bigger / more-connected shapes bank more.\n"
+	s += "Deck is a finite pool: replacing a cup or\n"
+	s += "casting returns those cards, reshuffled.\n\n"
+	s += "MAGIC FORMATIONS\n"
+	s += "────────────────────────\n"
+	for mf in MAGIC_FORMATIONS:
+		s += "%s (cups %s) — %s\n" % [
+			mf["name"], str(mf["slots"]).replace(" ", ""), mf["effect"]]
+	s += "\nSPIRIT FORMATIONS\n"
+	s += "────────────────────────\n"
+	for sf in SPIRIT_FORMATIONS:
+		s += "%s (cups %s) — %s\n" % [
+			sf["name"], str(sf["slots"]).replace(" ", ""), sf["effect"]]
+	s += "\n"
 	s += "YOUR CUP LAYOUT (indices)\n"
 	s += "  [0][1][2][3]   back row (toward foe)\n"
 	s += "  [4][5][6][7]   front row (toward you)\n\n"
@@ -425,23 +631,37 @@ func _build_book_text() -> String:
 func _build_deck(target: Array[Dictionary]) -> void:
 	var rng := RandomNumberGenerator.new();  rng.randomize()
 	target.clear()
-	for _i in 24: target.append(ELEMENTS[rng.randi() % ELEMENTS.size()])
-	for _i in 6:  target.append(CONNECTOR)
+	for _i in ELEMENT_POOL: target.append(ELEMENTS[rng.randi() % ELEMENTS.size()])
+	for _i in 10:  target.append(CONNECTOR)
+	_shuffle_deck(target)
+
+
+func _shuffle_deck(target: Array) -> void:
+	var rng := RandomNumberGenerator.new();  rng.randomize()
 	for i in target.size():
 		var j := rng.randi_range(i, target.size() - 1)
-		var tmp := target[i];  target[i] = target[j];  target[j] = tmp
+		var tmp = target[i];  target[i] = target[j];  target[j] = tmp
+
+
+# Recycling pool: a replaced / cleared / unused card returns to the deck,
+# which is re-randomised every time something comes back.
+func _return_to_deck(data) -> void:
+	if data == null: return
+	player_deck.append(data)
+	_shuffle_deck(player_deck)
+	deck_label.text = "Deck: %d" % player_deck.size()
 
 
 func _on_draw_pressed() -> void:
 	if _turn != "player" or _game_over: return
 	_deselect_card()
-	for node in player_hand: node.queue_free()
-	player_hand.clear()
+	_recycle_hand()
 	if player_deck.size() < HAND_COUNT: _build_deck(player_deck)
 	var start_x := -(HAND_COUNT - 1) * HAND_SPACING / 2.0
 	for i in HAND_COUNT:
 		var data: Dictionary = player_deck.pop_back()
 		var card := _make_card(data)
+		card.set_meta("data", data)
 		card.position = Vector3(start_x + i * HAND_SPACING, 0.025, HAND_Z)
 		_add_card_area(card, data);  add_child(card);  player_hand.append(card)
 	deck_label.text = "Deck: %d" % player_deck.size()
@@ -505,10 +725,21 @@ func _deselect_card() -> void:
 
 # ── Play element card ─────────────────────────────────────────
 
+func _free_plasma_in(slot: Node3D) -> void:
+	for child in slot.get_children():
+		if child is MeshInstance3D and child.mesh is SphereMesh:
+			child.queue_free()
+
+
 func _play_to_slot(idx: int) -> void:
-	if slot_contents[idx] != null: return
 	var card := _selected_card_node;  var data := _selected_card_data
 	_has_selection = false;  _selected_card_node = null;  _selected_card_data = {}
+	# Replacing an occupied cup: the displaced card recycles into the deck.
+	if slot_contents[idx] != null:
+		_return_to_deck(slot_contents[idx])
+		_free_plasma_in(player_slots[idx])
+		slot_plasma_mat[idx] = null
+		slot_plasma_color[idx] = null
 	player_hand.erase(card);  slot_contents[idx] = data
 
 	var t := create_tween().set_parallel(true)
@@ -989,12 +1220,23 @@ func _on_cast_pressed() -> void:
 	var fname: String = _active_formation["name"]
 	var base_dmg: int = FORMATION_BASE_DAMAGE.get(fname, 0)
 	var mult: float   = ELEMENT_MULTIPLIER.get(_active_dominant, 1.0)
-	var damage: int   = int(round(base_dmg * mult))
 	var shield: int   = FORMATION_SHIELD.get(fname, 0)
 	var spell_caption := _active_spell_name
 
+	# Power dial: weaker attack → more Essence banked toward the upper layers.
+	# Essence scales with the GEOMETRY of what you built (cups + internal links).
+	var fslots: Array = _active_formation["slots"]
+	var links := 0
+	for conn in connections:
+		if conn["a"] in fslots and conn["b"] in fslots: links += 1
+	var geom: int = fslots.size() + links
+	var dmg_mult: float = [1.0, 0.5, 0.0][cast_power]
+	var ess_mult: int = [0, 1, 2][cast_power]
+	var damage: int = int(round(base_dmg * mult * dmg_mult))
+	shield = int(round(shield * dmg_mult))
+	player_essence += geom * ess_mult
+
 	if damage > 0:
-		# Apply opponent shield then HP
 		var absorbed: int = min(opponent_shield, damage)
 		opponent_shield -= absorbed
 		var net: int = damage - absorbed
@@ -1003,8 +1245,11 @@ func _on_cast_pressed() -> void:
 	if shield > 0:
 		player_shield += shield
 		_flash_shield_on_player(shield, spell_caption)
+	if cast_power > 0:
+		_flash_essence(geom * ess_mult)
 
 	_refresh_hp_labels()
+	_refresh_essence_label()
 	_clear_player_board()
 	_clear_active_formation()
 	formation_label.text = ""
@@ -1057,7 +1302,10 @@ func _clear_player_board() -> void:
 		var b = conn.get("bridge")
 		if b != null and is_instance_valid(b):
 			b.queue_free()
+	for conn in connections:
+		_return_to_deck(CONNECTOR)
 	for i in slot_contents.size():
+		_return_to_deck(slot_contents[i])
 		slot_contents[i]      = null
 		slot_plasma_mat[i]    = null
 		slot_plasma_color[i]  = null
@@ -1069,7 +1317,10 @@ func _clear_player_board() -> void:
 func _set_buttons_enabled(on: bool) -> void:
 	draw_btn.disabled     = not on
 	end_turn_btn.disabled = not on
-	cast_btn.disabled     = (not on) or (not _has_active_formation)
+	power_btn.disabled    = not on
+	cast_btn.disabled       = (not on) or (not _has_active_formation)
+	cast_magic_btn.disabled  = (not on) or _active_m_formation.is_empty()
+	cast_spirit_btn.disabled = (not on) or _active_s_formation.is_empty()
 
 
 func _start_player_turn() -> void:
@@ -1081,15 +1332,24 @@ func _start_player_turn() -> void:
 	turn_label.text = "YOUR TURN"
 
 
+func _recycle_hand() -> void:
+	for node in player_hand:
+		if is_instance_valid(node) and node.has_meta("data"):
+			player_deck.append(node.get_meta("data"))
+		if is_instance_valid(node): node.queue_free()
+	player_hand.clear()
+	_shuffle_deck(player_deck)
+
+
 func _deal_player_hand() -> void:
 	_deselect_card()
-	for node in player_hand: node.queue_free()
-	player_hand.clear()
+	_recycle_hand()
 	if player_deck.size() < HAND_COUNT: _build_deck(player_deck)
 	var start_x := -(HAND_COUNT - 1) * HAND_SPACING / 2.0
 	for i in HAND_COUNT:
 		var data: Dictionary = player_deck.pop_back()
 		var card := _make_card(data)
+		card.set_meta("data", data)
 		card.position = Vector3(start_x + i * HAND_SPACING, 0.025, HAND_Z)
 		_add_card_area(card, data);  add_child(card);  player_hand.append(card)
 	deck_label.text = "Deck: %d" % player_deck.size()
@@ -1313,3 +1573,246 @@ func _end_game(player_won: bool) -> void:
 
 func _on_restart_pressed() -> void:
 	get_tree().reload_current_scene()
+
+
+# ── Magic / Spiritual layer interaction (foundation) ──────────
+
+func _on_layer_slot_input(_c, event, _p, _n, _i, layer: String, idx: int) -> void:
+	if not (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT):
+		return
+	if _turn != "player" or _game_over: return
+	if not _has_selection: return
+	if layer == "spirit" and not spirit_unlocked: return
+
+	if _selected_card_data.get("type") == "connector":
+		_handle_layer_connector(layer, idx)
+	else:
+		_place_layer_element(layer, idx)
+
+
+func _layer_slots(layer: String) -> Array:
+	return magic_player_slots if layer == "magic" else spirit_player_slots
+
+func _layer_contents(layer: String) -> Array:
+	return m_slot_contents if layer == "magic" else s_slot_contents
+
+func _layer_connections(layer: String) -> Array:
+	return m_connections if layer == "magic" else s_connections
+
+func _layer_cost(layer: String) -> int:
+	return MAGIC_COST if layer == "magic" else SPIRIT_COST
+
+func _layer_tint(layer: String) -> Color:
+	return Color(0.6,0.3,0.95) if layer == "magic" else Color(1.0,0.9,0.5)
+
+
+func _place_layer_element(layer: String, idx: int) -> void:
+	var cost := _layer_cost(layer)
+	if player_essence < cost:
+		_flash_essence_warn()
+		return
+	var contents := _layer_contents(layer)
+	var slots := _layer_slots(layer)
+	var card := _selected_card_node
+	var data := _selected_card_data
+	_has_selection = false;  _selected_card_node = null;  _selected_card_data = {}
+
+	if contents[idx] != null:
+		_return_to_deck(contents[idx])
+		_free_plasma_in(slots[idx])
+	player_essence -= cost
+	contents[idx] = data
+	player_hand.erase(card)
+	var t := create_tween().set_parallel(true)
+	t.tween_property(card, "scale", Vector3(1.4,1.4,1.4), 0.10)
+	t.chain().tween_property(card, "scale", Vector3.ZERO, 0.18).set_ease(Tween.EASE_IN)
+	t.chain().tween_callback(card.queue_free)
+	await get_tree().create_timer(0.16).timeout
+	_spawn_plasma(slots[idx], data, -1)
+	_refresh_essence_label()
+	_check_layer_formation(layer)
+
+
+func _handle_layer_connector(layer: String, idx: int) -> void:
+	var first := _m_connector_slot1 if layer == "magic" else _s_connector_slot1
+	if first == -1:
+		if layer == "magic": _m_connector_slot1 = idx
+		else: _s_connector_slot1 = idx
+		return
+	if idx == first:
+		if layer == "magic": _m_connector_slot1 = -1
+		else: _s_connector_slot1 = -1
+		return
+	# Magic/Spirit links are free-form: any two cups, no grid adjacency.
+	var card := _selected_card_node
+	_has_selection = false;  _selected_card_node = null;  _selected_card_data = {}
+	player_hand.erase(card)
+	if layer == "magic": _m_connector_slot1 = -1
+	else: _s_connector_slot1 = -1
+	var t := create_tween().set_parallel(true)
+	t.tween_property(card, "scale", Vector3(1.4,1.4,1.4), 0.10)
+	t.chain().tween_property(card, "scale", Vector3.ZERO, 0.18).set_ease(Tween.EASE_IN)
+	t.chain().tween_callback(card.queue_free)
+	await get_tree().create_timer(0.16).timeout
+	_spawn_curved_bridge(layer, first, idx)
+	_check_layer_formation(layer)
+
+
+func _spawn_curved_bridge(layer: String, a: int, b: int) -> void:
+	var slots := _layer_slots(layer)
+	var pa: Vector3 = slots[a].global_position + Vector3(0, 0.16, 0)
+	var pb: Vector3 = slots[b].global_position + Vector3(0, 0.16, 0)
+	var tint := _layer_tint(layer)
+	var lift := 0.35 + pa.distance_to(pb) * 0.18
+	var ctrl := (pa + pb) * 0.5 + Vector3(0, lift, 0)
+
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = tint;  mat.emission_enabled = true
+	mat.emission = tint;  mat.emission_energy_multiplier = 3.0;  mat.roughness = 0.15
+
+	var bridge := Node3D.new();  add_child(bridge)
+	var segs := 14
+	var prev := pa
+	for s in range(1, segs + 1):
+		var tt := float(s) / segs
+		var omt := 1.0 - tt
+		var pt := omt*omt*pa + 2.0*omt*tt*ctrl + tt*tt*pb
+		var seg := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = Vector3(0.05, 0.05, prev.distance_to(pt))
+		seg.mesh = bm
+		seg.set_surface_override_material(0, mat)
+		seg.position = (prev + pt) * 0.5
+		seg.look_at(pt, Vector3.UP)
+		bridge.add_child(seg)
+		prev = pt
+
+	_layer_connections(layer).append({"a": a, "b": b, "bridge": bridge})
+	bridge.scale = Vector3.ZERO
+	var t := create_tween().set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_BACK)
+	t.tween_property(bridge, "scale", Vector3.ONE, 0.35)
+
+
+func _check_layer_formation(layer: String) -> void:
+	var contents := _layer_contents(layer)
+	var conns := _layer_connections(layer)
+	var list: Array = MAGIC_FORMATIONS if layer == "magic" else SPIRIT_FORMATIONS
+	# Prefer the LARGEST completed shape — bigger geometry = bigger spell.
+	var formation: Dictionary = {}
+	var best_size := -1
+	for cand in list:
+		var cslots: Array = cand["slots"]
+		var ok := true
+		for i in cslots:
+			if contents[i] == null: ok = false; break
+		if not ok: continue
+		var clinked := false
+		for conn in conns:
+			if conn["a"] in cslots and conn["b"] in cslots: clinked = true; break
+		if not clinked: continue
+		if cslots.size() > best_size:
+			best_size = cslots.size();  formation = cand
+	if not formation.is_empty():
+		var fslots: Array = formation["slots"]
+		var counts: Dictionary = {}
+		for i in fslots:
+			var eid: String = contents[i]["id"]
+			counts[eid] = counts.get(eid, 0) + 1
+		var dom := "";  var top := 0
+		for k in counts:
+			if counts[k] > top: top = counts[k]; dom = k
+		var spell := "%s %s" % [dom.capitalize(), formation["name"]]
+		if layer == "magic":
+			_active_m_formation = formation;  _active_m_spell = spell
+			cast_magic_btn.disabled = (_turn != "player")
+			formation_label.text = "✦ MAGIC: %s — %s" % [spell.to_upper(), formation["effect"]]
+		else:
+			_active_s_formation = formation;  _active_s_spell = spell
+			cast_spirit_btn.disabled = (_turn != "player")
+			formation_label.text = "✦ SPIRIT: %s — %s" % [spell.to_upper(), formation["effect"]]
+		return
+	if layer == "magic":
+		_active_m_formation = {};  cast_magic_btn.disabled = true
+	else:
+		_active_s_formation = {};  cast_spirit_btn.disabled = true
+
+
+func _layer_dominant_mult(layer: String, formation: Dictionary) -> float:
+	var contents := _layer_contents(layer)
+	var counts: Dictionary = {}
+	for i in formation["slots"]:
+		if contents[i] != null:
+			var eid: String = contents[i]["id"]
+			counts[eid] = counts.get(eid, 0) + 1
+	var dom := "";  var top := 0
+	for k in counts:
+		if counts[k] > top: top = counts[k]; dom = k
+	return ELEMENT_MULTIPLIER.get(dom, 1.0)
+
+
+func _on_cast_magic_pressed() -> void:
+	if _turn != "player" or _game_over or _active_m_formation.is_empty(): return
+	var f := _active_m_formation
+	var dmg := int(round(int(f["dmg"]) * _layer_dominant_mult("magic", f)))
+	if dmg > 0:
+		var absorbed: int = min(opponent_shield, dmg)
+		opponent_shield -= absorbed
+		var net: int = dmg - absorbed
+		opponent_hp = max(0, opponent_hp - net)
+		_flash_damage_on_opponent(net, _active_m_spell)
+	if f["name"] == "Conflux":
+		_unlock_spiritual()
+	_clear_layer_board("magic")
+	_active_m_formation = {};  cast_magic_btn.disabled = true
+	formation_label.text = ""
+	_refresh_hp_labels()
+	if opponent_hp <= 0: _end_game(true)
+
+
+func _on_cast_spirit_pressed() -> void:
+	if _turn != "player" or _game_over or _active_s_formation.is_empty(): return
+	var f := _active_s_formation
+	if f["name"] == "Ascendant":
+		_flash_damage_on_opponent(opponent_hp, "ASCENDANT")
+		opponent_hp = 0
+		_refresh_hp_labels()
+		_end_game(true)
+		return
+	var dmg := int(round(int(f["dmg"]) * _layer_dominant_mult("spirit", f)))
+	var absorbed: int = min(opponent_shield, dmg)
+	opponent_shield -= absorbed
+	opponent_hp = max(0, opponent_hp - (dmg - absorbed))
+	_flash_damage_on_opponent(dmg - absorbed, _active_s_spell)
+	_clear_layer_board("spirit")
+	_active_s_formation = {};  cast_spirit_btn.disabled = true
+	formation_label.text = ""
+	_refresh_hp_labels()
+	if opponent_hp <= 0: _end_game(true)
+
+
+func _unlock_spiritual() -> void:
+	spirit_unlocked = true
+	for s in spirit_player_slots: s.visible = true
+	for s in spirit_opp_slots:    s.visible = true
+	_refresh_essence_label()
+	turn_label.text = "✦ THE SPIRITUAL LAYER OPENS ✦"
+
+
+func _clear_layer_board(layer: String) -> void:
+	var contents := _layer_contents(layer)
+	var conns := _layer_connections(layer)
+	var slots := _layer_slots(layer)
+	for slot in slots:
+		_free_plasma_in(slot)
+	for conn in conns:
+		var b = conn.get("bridge")
+		if b != null and is_instance_valid(b): b.queue_free()
+		_return_to_deck(CONNECTOR)
+	for i in contents.size():
+		_return_to_deck(contents[i])
+		contents[i] = null
+	conns.clear()
+
+
+func _flash_essence_warn() -> void:
+	formation_label.text = "Not enough ✦ Essence — cast Earth spells (Half/Channel) to bank it"
