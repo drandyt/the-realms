@@ -16,6 +16,45 @@ const CARD_W = 0.54
 const CARD_H = 0.026
 const CARD_D = 0.76
 
+# ── Tier system ───────────────────────────────────────────────
+const MAG_COUNT       = 6      # magical layer slot count
+const MAG_Y           = 1.75   # height of the magical ring
+const MAG_RING_R      = 1.45   # radius of the magical ring
+const SPI_Y           = 3.30   # height of the spiritual polyhedron
+const SPI_VERTS       = 4      # tetrahedron vertices
+
+const ESSENCE_PER_SLOT = 4     # essence banked to open one magical slot
+const SPIRIT_PER_VERT  = 3     # spirit banked to light one polyhedron vertex
+const SURGE_ESSENCE    = 6     # essence from a deliberate earthly Surge
+const SURGE_SPIRIT     = 5     # spirit from a deliberate magical Surge
+const MAG_BASE_DMG     = 14    # base esoteric damage of a magical cast
+
+# Per-element economy. Sharp tradeoff: material elements hit hard but
+# bank almost nothing; spiritual elements barely scratch but pour upward.
+# So pure builds specialise — only a mixed/combo formation does both.
+const ELEMENT_AFFINITY: Dictionary = {
+	"rage":   { "dmg": 1.4, "ess": 0 },
+	"fire":   { "dmg": 1.3, "ess": 0 },
+	"earth":  { "dmg": 1.0, "ess": 1 },
+	"water":  { "dmg": 1.0, "ess": 1 },
+	"air":    { "dmg": 0.6, "ess": 2 },
+	"energy": { "dmg": 0.7, "ess": 2 },
+	"light":  { "dmg": 0.5, "ess": 3 },
+	"life":   { "dmg": 0.3, "ess": 3 },
+	"time":   { "dmg": 0.2, "ess": 4 },
+}
+
+# Clever "have your cake" pairings. If BOTH elements appear in a
+# formation, it pays out bonus damage AND bonus essence — the skill
+# is assembling these under fire.
+const COMBOS: Array[Dictionary] = [
+	{ "pair": ["fire",  "time"],   "name": "Emberglass"  },
+	{ "pair": ["life",  "rage"],   "name": "Bloodbloom"  },
+	{ "pair": ["water", "light"],  "name": "Prism Tide"  },
+	{ "pair": ["earth", "energy"], "name": "Tectonic"    },
+	{ "pair": ["air",   "life"],   "name": "Spirit Gale" },
+]
+
 # ── Card definitions ──────────────────────────────────────────
 const ELEMENTS: Array[Dictionary] = [
 	{ "type": "element", "id": "earth",  "color": Color(0.30, 0.55, 0.15), "glow": Color(0.15, 0.40, 0.05), "dark": Color(0.08, 0.14, 0.04) },
@@ -94,10 +133,11 @@ var _active_formation_highlights: Array[Node3D] = []
 var _active_formation: Dictionary = {}   # currently castable formation
 var _active_dominant: String      = ""
 var _active_spell_name: String    = ""
+var _active_eco: Dictionary       = {}
 var _has_active_formation := false
 
-var player_hp   := 30
-var opponent_hp := 30
+var player_hp   := LIFE_START
+var opponent_hp := LIFE_START
 var player_shield   := 0
 var opponent_shield := 0
 
@@ -107,6 +147,43 @@ var formation_label: Label
 var cast_btn: Button
 var hp_player_label: Label
 var hp_opp_label: Label
+
+# ── Tier 2 — magical ──────────────────────────────────────────
+var mag_slots: Array[Node3D] = []
+var mag_slot_mat: Array      = []   # StandardMaterial3D (rune glow ring)
+var mag_unlocked: Array      = []   # bool
+var mag_contents: Array      = []   # Dictionary or null
+var mag_plasma_mat: Array    = []   # StandardMaterial3D or null
+var mag_plasma_color: Array  = []   # Color or null
+var mag_connections: Array   = []   # {a, b, bridge}
+var _mag_connector_slot1     := -1
+var _mag_active              := false
+var _mag_dominant            := ""
+var _mag_eco: Dictionary     = {}
+
+# ── Tier 3 — spiritual ────────────────────────────────────────
+var spi_verts: Array[Node3D] = []
+var spi_vert_mat: Array      = []   # StandardMaterial3D
+var spi_edges: Array         = []   # {i, j, mat}
+var spi_lit: Array           = []   # bool
+var essence                  := 0
+var spirit                   := 0
+
+# ── Life & creatures ──────────────────────────────────────────
+const LIFE_START   = 100
+const SUMMON_COST  = 10    # life spent to summon one creature
+const CREATURE_HP  = 10
+const CREATURE_ATK = 5
+var player_creatures: Array   = []   # {node, hp, max_hp, atk, target, lbl}
+var opponent_creatures: Array = []
+var _sel_creature             := -1  # index into player_creatures, or -1
+var _game_over                := false
+
+var ascend_btn: Button
+var mag_cast_btn: Button
+var mag_ascend_btn: Button
+var transcend_btn: Button
+var tier_label: Label
 
 
 func _ready() -> void:
@@ -128,6 +205,16 @@ func _ready() -> void:
 	slot_contents.resize(player_slots.size());   slot_contents.fill(null)
 	slot_plasma_mat.resize(player_slots.size());  slot_plasma_mat.fill(null)
 	slot_plasma_color.resize(player_slots.size()); slot_plasma_color.fill(null)
+
+	mag_contents.resize(MAG_COUNT);     mag_contents.fill(null)
+	mag_plasma_mat.resize(MAG_COUNT);   mag_plasma_mat.fill(null)
+	mag_plasma_color.resize(MAG_COUNT); mag_plasma_color.fill(null)
+	mag_unlocked.resize(MAG_COUNT);     mag_unlocked.fill(false)
+	spi_lit.resize(SPI_VERTS);          spi_lit.fill(false)
+	_setup_mag_layer()
+	_setup_spi_layer()
+	_setup_combat_ui()
+	_refresh_tier_label()
 
 
 # ── Environment ───────────────────────────────────────────────
@@ -153,9 +240,9 @@ func _setup_environment() -> void:
 
 func _make_camera() -> Camera3D:
 	var cam := Camera3D.new()
-	cam.position = Vector3(0.0, 9.5, 7.0)
-	cam.rotation_degrees = Vector3(-56.0, 0.0, 0.0)
-	cam.fov = 60.0;  add_child(cam);  return cam
+	cam.position = Vector3(0.0, 11.0, 9.2)
+	cam.rotation_degrees = Vector3(-52.0, 0.0, 0.0)
+	cam.fov = 64.0;  add_child(cam);  return cam
 
 
 # ── Table ─────────────────────────────────────────────────────
@@ -272,11 +359,11 @@ func _setup_ui() -> void:
 	formation_label = Label.new()
 	formation_label.anchor_left   = 0.5;  formation_label.anchor_right  = 0.5
 	formation_label.anchor_top    = 1.0;  formation_label.anchor_bottom = 1.0
-	formation_label.offset_left   = -260.0;  formation_label.offset_right  = 260.0
-	formation_label.offset_top    = -130.0;  formation_label.offset_bottom = -70.0
+	formation_label.offset_left   = -320.0;  formation_label.offset_right  = 320.0
+	formation_label.offset_top    = -176.0;  formation_label.offset_bottom = -70.0
 	formation_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	formation_label.vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
-	formation_label.add_theme_font_size_override("font_size", 20)
+	formation_label.add_theme_font_size_override("font_size", 18)
 	canvas.add_child(formation_label)
 
 	# Cast button (centre bottom, below formation label)
@@ -285,11 +372,68 @@ func _setup_ui() -> void:
 	cast_btn.custom_minimum_size = Vector2(180, 54)
 	cast_btn.anchor_left = 0.5;  cast_btn.anchor_right  = 0.5
 	cast_btn.anchor_top  = 1.0;  cast_btn.anchor_bottom = 1.0
-	cast_btn.offset_left = -90.0;  cast_btn.offset_right  = 90.0
-	cast_btn.offset_top  = -64.0;  cast_btn.offset_bottom = -10.0
+	cast_btn.offset_left = -188.0;  cast_btn.offset_right  = -8.0
+	cast_btn.offset_top  = -64.0;   cast_btn.offset_bottom = -10.0
 	cast_btn.disabled = true
 	cast_btn.pressed.connect(_on_cast_pressed)
 	canvas.add_child(cast_btn)
+
+	# Surge button — sacrifice the formation for an essence spike
+	ascend_btn = Button.new()
+	ascend_btn.text = "SURGE ↑"
+	ascend_btn.custom_minimum_size = Vector2(180, 54)
+	ascend_btn.anchor_left = 0.5;  ascend_btn.anchor_right  = 0.5
+	ascend_btn.anchor_top  = 1.0;  ascend_btn.anchor_bottom = 1.0
+	ascend_btn.offset_left = 8.0;   ascend_btn.offset_right  = 188.0
+	ascend_btn.offset_top  = -64.0; ascend_btn.offset_bottom = -10.0
+	ascend_btn.disabled = true
+	ascend_btn.pressed.connect(_on_surge_pressed)
+	canvas.add_child(ascend_btn)
+
+	# Magical-tier buttons — right edge, vertically centred
+	mag_cast_btn = Button.new()
+	mag_cast_btn.text = "MAG CAST"
+	mag_cast_btn.custom_minimum_size = Vector2(150, 46)
+	mag_cast_btn.anchor_left = 1.0;  mag_cast_btn.anchor_right  = 1.0
+	mag_cast_btn.anchor_top  = 0.5;  mag_cast_btn.anchor_bottom = 0.5
+	mag_cast_btn.offset_left = -170.0;  mag_cast_btn.offset_right  = -20.0
+	mag_cast_btn.offset_top  = -56.0;   mag_cast_btn.offset_bottom = -10.0
+	mag_cast_btn.disabled = true
+	mag_cast_btn.pressed.connect(_on_mag_cast_pressed)
+	canvas.add_child(mag_cast_btn)
+
+	mag_ascend_btn = Button.new()
+	mag_ascend_btn.text = "MAG SURGE ↑"
+	mag_ascend_btn.custom_minimum_size = Vector2(150, 46)
+	mag_ascend_btn.anchor_left = 1.0;  mag_ascend_btn.anchor_right  = 1.0
+	mag_ascend_btn.anchor_top  = 0.5;  mag_ascend_btn.anchor_bottom = 0.5
+	mag_ascend_btn.offset_left = -170.0;  mag_ascend_btn.offset_right  = -20.0
+	mag_ascend_btn.offset_top  = 10.0;    mag_ascend_btn.offset_bottom = 56.0
+	mag_ascend_btn.disabled = true
+	mag_ascend_btn.pressed.connect(_on_mag_surge_pressed)
+	canvas.add_child(mag_ascend_btn)
+
+	# Transcend — the game-ender, top centre
+	transcend_btn = Button.new()
+	transcend_btn.text = "✦  TRANSCEND  ✦"
+	transcend_btn.custom_minimum_size = Vector2(260, 50)
+	transcend_btn.anchor_left = 0.5;  transcend_btn.anchor_right  = 0.5
+	transcend_btn.anchor_top  = 0.0;  transcend_btn.anchor_bottom = 0.0
+	transcend_btn.offset_left = -130.0;  transcend_btn.offset_right  = 130.0
+	transcend_btn.offset_top  = 16.0;    transcend_btn.offset_bottom = 66.0
+	transcend_btn.disabled = true
+	transcend_btn.pressed.connect(_on_transcend_pressed)
+	canvas.add_child(transcend_btn)
+
+	# Tier progress / magical preview readout, just below Transcend
+	tier_label = Label.new()
+	tier_label.anchor_left = 0.5;  tier_label.anchor_right  = 0.5
+	tier_label.anchor_top  = 0.0;  tier_label.anchor_bottom = 0.0
+	tier_label.offset_left = -380.0;  tier_label.offset_right  = 380.0
+	tier_label.offset_top  = 72.0;    tier_label.offset_bottom = 132.0
+	tier_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	tier_label.add_theme_font_size_override("font_size", 16)
+	canvas.add_child(tier_label)
 
 	# HP labels
 	hp_opp_label = Label.new()
@@ -815,13 +959,35 @@ func _show_formation(formation: Dictionary, element: String, fslots: Array) -> v
 	var spell_key := fname + "_" + element
 	var spell: String = SPELLS.get(spell_key, element.capitalize() + " " + fname)
 
+	var eids: Array = []
+	for i in fslots:
+		if slot_contents[i] != null:
+			eids.append(slot_contents[i]["id"])
+	var base_dmg: int = FORMATION_BASE_DAMAGE.get(fname, 0)
+	var eco := _economy(eids, base_dmg)
+	var shield: int = FORMATION_SHIELD.get(fname, 0)
+
 	_active_formation     = formation
 	_active_dominant      = element
 	_active_spell_name    = spell
+	_active_eco           = eco
 	_has_active_formation = true
 	cast_btn.disabled     = false
+	ascend_btn.disabled   = false
 
-	formation_label.text = "✦ %s  ·  %s\n%s" % [spell.to_upper(), fname, formation["effect"]]
+	var cast_line := "CAST → %d dmg" % eco["dmg"]
+	if shield > 0:
+		cast_line += "  +%d ⛨" % shield
+	cast_line += "   ·   +%d essence" % eco["ess"]
+	if int(eco.get("heal", 0)) > 0:
+		cast_line += "   ·   +%d life" % int(eco["heal"])
+	if int(eco.get("drain", 0)) > 0:
+		cast_line += "   ·   drain %d" % int(eco["drain"])
+	if eco["combo"] != "":
+		cast_line += "   ✦ %s combo" % eco["combo"]
+	formation_label.text = "✦ %s  ·  %s\n%s\n%s\nSURGE ↑ → +%d essence (no damage)" % [
+		spell.to_upper(), fname, formation["effect"], cast_line,
+		SURGE_ESSENCE + int(max(0, eids.size() - 2))]
 
 	# Highlight slots in formation with gold rings
 	_clear_active_formation_visuals()
@@ -841,8 +1007,10 @@ func _clear_active_formation() -> void:
 	_active_formation     = {}
 	_active_dominant      = ""
 	_active_spell_name    = ""
+	_active_eco           = {}
 	_has_active_formation = false
 	cast_btn.disabled     = true
+	if ascend_btn: ascend_btn.disabled = true
 	_clear_active_formation_visuals()
 
 
@@ -873,11 +1041,13 @@ const ELEMENT_MULTIPLIER: Dictionary = {
 func _on_cast_pressed() -> void:
 	if not _has_active_formation: return
 	var fname: String = _active_formation["name"]
-	var base_dmg: int = FORMATION_BASE_DAMAGE.get(fname, 0)
-	var mult: float   = ELEMENT_MULTIPLIER.get(_active_dominant, 1.0)
-	var damage: int   = int(round(base_dmg * mult))
+	var damage: int   = int(_active_eco.get("dmg", 0))
+	var ess: int      = int(_active_eco.get("ess", 0))
+	var combo: String = String(_active_eco.get("combo", ""))
 	var shield: int   = FORMATION_SHIELD.get(fname, 0)
 	var spell_caption := _active_spell_name
+	if combo != "":
+		spell_caption += " ✦" + combo
 
 	if damage > 0:
 		# Apply opponent shield then HP
@@ -889,19 +1059,25 @@ func _on_cast_pressed() -> void:
 	if shield > 0:
 		player_shield += shield
 		_flash_shield_on_player(shield, spell_caption)
+	if ess > 0:
+		_bank_essence(ess)
+		_flash_world_text("+%d essence" % ess, Vector3(0, 1.5, 0.4), Color(0.7, 0.6, 1.0))
+	var gain := int(_active_eco.get("heal", 0)) + int(_active_eco.get("drain", 0))
+	if gain > 0:
+		player_hp = min(LIFE_START, player_hp + gain)
+		_flash_shield_on_player(gain, "+life")
 
 	_refresh_hp_labels()
 	_clear_player_board()
 	_clear_active_formation()
 	formation_label.text = ""
 
-	if opponent_hp <= 0:
-		formation_label.text = "★  VICTORY  ★"
+	_check_game_over()
 
 
 func _refresh_hp_labels() -> void:
-	hp_opp_label.text    = "OPPONENT  HP %d   ⛨ %d" % [opponent_hp, opponent_shield]
-	hp_player_label.text = "YOU       HP %d   ⛨ %d" % [player_hp,   player_shield]
+	hp_opp_label.text    = "OPPONENT  LIFE %d   ⛨ %d   ⚔ %d" % [opponent_hp, opponent_shield, opponent_creatures.size()]
+	hp_player_label.text = "YOU       LIFE %d   ⛨ %d   ⚔ %d" % [player_hp,   player_shield,   player_creatures.size()]
 
 
 func _flash_damage_on_opponent(dmg: int, label: String) -> void:
@@ -948,3 +1124,712 @@ func _clear_player_board() -> void:
 		slot_plasma_mat[i]    = null
 		slot_plasma_color[i]  = null
 	connections.clear()
+
+
+# ══════════════════════════════════════════════════════════════
+#  SPELL ECONOMY
+# ══════════════════════════════════════════════════════════════
+
+func _economy(eids: Array, base_dmg: int) -> Dictionary:
+	var counts := {}
+	for e in eids:
+		counts[e] = counts.get(e, 0) + 1
+	var dom := ""
+	var best := 0
+	for k in counts:
+		if counts[k] > best:
+			best = counts[k]
+			dom = k
+	var aff: Dictionary = ELEMENT_AFFINITY.get(dom, { "dmg": 1.0, "ess": 1 })
+	var dmg := int(round(float(base_dmg) * float(aff["dmg"])))
+	var ess := int(aff["ess"])
+	if eids.size() > 2:
+		ess += (eids.size() - 2) / 2
+	var heal := 0
+	var drain := 0
+	if dom == "life":
+		heal = 6 + eids.size() * 2
+	elif dom == "light":
+		heal = 4
+	if dom == "time" or dom == "water":
+		drain = int(round(float(dmg) * 0.5))
+	var combo := ""
+	for c in COMBOS:
+		var pair: Array = c["pair"]
+		if pair[0] in eids and pair[1] in eids:
+			combo = c["name"]
+			dmg = int(round(float(dmg) * 1.25)) + 2
+			ess += 2
+			break
+	return { "dom": dom, "dmg": dmg, "ess": ess, "combo": combo, "heal": heal, "drain": drain }
+
+
+func _bank_essence(n: int) -> void:
+	essence += n
+	var target: int = min(MAG_COUNT, essence / ESSENCE_PER_SLOT)
+	for i in MAG_COUNT:
+		if i < target and not mag_unlocked[i]:
+			mag_unlocked[i] = true
+			_style_mag_slot(i)
+			var sv: Node3D = mag_slots[i]
+			var tw := create_tween()
+			tw.tween_property(sv, "scale", Vector3(1.4, 1.4, 1.4), 0.22).set_trans(Tween.TRANS_BACK)
+			tw.tween_property(sv, "scale", Vector3.ONE, 0.22)
+	_refresh_tier_label()
+
+
+func _bank_spirit(n: int) -> void:
+	spirit += n
+	var target: int = min(SPI_VERTS, spirit / SPIRIT_PER_VERT)
+	for i in SPI_VERTS:
+		if i < target and not spi_lit[i]:
+			_light_spi_vertex(i)
+	_update_transcend()
+	_refresh_tier_label()
+
+
+func _on_surge_pressed() -> void:
+	if not _has_active_formation: return
+	var n := SURGE_ESSENCE
+	if _active_formation.has("slots"):
+		n += int(max(0, _active_formation["slots"].size() - 2))
+	_bank_essence(n)
+	_flash_world_text("SURGE ↑  +%d essence" % n, Vector3(0, 1.6, 0.4), Color(0.75, 0.6, 1.0))
+	_clear_player_board()
+	_clear_active_formation()
+	formation_label.text = ""
+
+
+# ══════════════════════════════════════════════════════════════
+#  MAGICAL LAYER
+# ══════════════════════════════════════════════════════════════
+
+func _setup_mag_layer() -> void:
+	mag_slot_mat.resize(MAG_COUNT)
+	var plat := MeshInstance3D.new()
+	var pm := TorusMesh.new()
+	pm.outer_radius = MAG_RING_R + 0.35
+	pm.inner_radius = MAG_RING_R - 0.35
+	pm.rings = 48
+	pm.ring_segments = 16
+	plat.mesh = pm
+	var pmat := StandardMaterial3D.new()
+	pmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	pmat.albedo_color = Color(0.30, 0.20, 0.45, 0.16)
+	pmat.emission_enabled = true
+	pmat.emission = Color(0.35, 0.20, 0.55)
+	pmat.emission_energy_multiplier = 0.6
+	plat.set_surface_override_material(0, pmat)
+	plat.position = Vector3(0, MAG_Y, 0)
+	add_child(plat)
+
+	for i in MAG_COUNT:
+		var ang := TAU * float(i) / float(MAG_COUNT) - PI * 0.5
+		var root := Node3D.new()
+		root.name = "Mag_Slot_%d" % i
+		root.position = Vector3(cos(ang) * MAG_RING_R, MAG_Y, sin(ang) * MAG_RING_R)
+		add_child(root)
+		mag_slots.append(root)
+
+		var ring := MeshInstance3D.new()
+		var rm := TorusMesh.new()
+		rm.outer_radius = 0.26
+		rm.inner_radius = 0.20
+		rm.rings = 24
+		rm.ring_segments = 10
+		ring.mesh = rm
+		var gmat := StandardMaterial3D.new()
+		gmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		gmat.emission_enabled = true
+		ring.set_surface_override_material(0, gmat)
+		ring.rotation_degrees.x = 90.0
+		root.add_child(ring)
+		mag_slot_mat[i] = gmat
+
+		var disc := MeshInstance3D.new()
+		var dm := CylinderMesh.new()
+		dm.top_radius = 0.19
+		dm.bottom_radius = 0.19
+		dm.height = 0.012
+		dm.radial_segments = 24
+		disc.mesh = dm
+		var dmat := StandardMaterial3D.new()
+		dmat.albedo_color = Color(0.06, 0.05, 0.10)
+		dmat.roughness = 0.85
+		disc.set_surface_override_material(0, dmat)
+		root.add_child(disc)
+
+		var area := Area3D.new()
+		var sh := CollisionShape3D.new()
+		var cyl := CylinderShape3D.new()
+		cyl.radius = 0.28
+		cyl.height = 0.40
+		sh.shape = cyl
+		area.add_child(sh)
+		area.input_event.connect(_on_mag_slot_input.bind(i))
+		root.add_child(area)
+		_style_mag_slot(i)
+
+
+func _style_mag_slot(i: int) -> void:
+	var m: StandardMaterial3D = mag_slot_mat[i]
+	if m == null: return
+	if mag_unlocked[i]:
+		m.albedo_color = Color(0.55, 0.75, 1.0, 0.95)
+		m.emission = Color(0.40, 0.65, 1.0)
+		m.emission_energy_multiplier = 2.6
+	else:
+		m.albedo_color = Color(0.35, 0.32, 0.42, 0.28)
+		m.emission = Color(0.20, 0.18, 0.28)
+		m.emission_energy_multiplier = 0.35
+
+
+func _on_mag_slot_input(_c, event, _p, _n, _i, idx: int) -> void:
+	if not (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT):
+		return
+	if _game_over: return
+	if not mag_unlocked[idx]: return
+	if not _has_selection: return
+	if _selected_card_data.get("type") == "connector":
+		_handle_mag_connector_click(idx)
+	else:
+		_play_to_mag_slot(idx)
+
+
+func _play_to_mag_slot(idx: int) -> void:
+	if mag_contents[idx] != null: return
+	var card := _selected_card_node
+	var data := _selected_card_data
+	_has_selection = false
+	_selected_card_node = null
+	_selected_card_data = {}
+	player_hand.erase(card)
+	mag_contents[idx] = data
+	var t := create_tween().set_parallel(true)
+	t.tween_property(card, "scale", Vector3(1.5, 1.5, 1.5), 0.10)
+	t.chain().tween_property(card, "scale", Vector3.ZERO, 0.20).set_ease(Tween.EASE_IN)
+	t.chain().tween_callback(card.queue_free)
+	await get_tree().create_timer(0.18).timeout
+	_spawn_mag_plasma(idx, data)
+
+
+func _spawn_mag_plasma(idx: int, data: Dictionary) -> void:
+	var slot: Node3D = mag_slots[idx]
+	var plasma := MeshInstance3D.new()
+	var mesh := SphereMesh.new()
+	mesh.radius = 0.12
+	mesh.height = 0.24
+	mesh.radial_segments = 16
+	mesh.rings = 8
+	plasma.mesh = mesh
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = data["color"]
+	mat.emission_enabled = true
+	mat.emission = data["glow"]
+	mat.emission_energy_multiplier = 3.5
+	mat.roughness = 0.1
+	mat.metallic = 0.2
+	plasma.set_surface_override_material(0, mat)
+	plasma.scale = Vector3.ZERO
+	plasma.position.y = 0.02
+	slot.add_child(plasma)
+	mag_plasma_mat[idx] = mat
+	mag_plasma_color[idx] = data["color"]
+	var t := create_tween().set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_ELASTIC)
+	t.tween_property(plasma, "scale", Vector3.ONE, 0.45)
+	var pulse := create_tween().set_loops()
+	pulse.tween_property(mat, "emission_energy_multiplier", 5.0, 0.9).set_ease(Tween.EASE_IN_OUT)
+	pulse.tween_property(mat, "emission_energy_multiplier", 2.5, 0.9).set_ease(Tween.EASE_IN_OUT)
+	_check_mag_formation()
+
+
+func _handle_mag_connector_click(idx: int) -> void:
+	if _mag_connector_slot1 == -1:
+		_mag_connector_slot1 = idx
+		return
+	if idx == _mag_connector_slot1:
+		_mag_connector_slot1 = -1
+		return
+	var a := _mag_connector_slot1
+	_play_mag_connector(a, idx)
+
+
+func _play_mag_connector(a: int, b: int) -> void:
+	var card := _selected_card_node
+	_has_selection = false
+	_mag_connector_slot1 = -1
+	_selected_card_node = null
+	_selected_card_data = {}
+	player_hand.erase(card)
+	var t := create_tween().set_parallel(true)
+	t.tween_property(card, "scale", Vector3(1.5, 1.5, 1.5), 0.10)
+	t.chain().tween_property(card, "scale", Vector3.ZERO, 0.20).set_ease(Tween.EASE_IN)
+	t.chain().tween_callback(card.queue_free)
+	await get_tree().create_timer(0.20).timeout
+	_draw_curved_pipe(a, b)
+
+
+func _draw_curved_pipe(idx_a: int, idx_b: int) -> void:
+	var pa: Vector3 = mag_slots[idx_a].global_position
+	var pb: Vector3 = mag_slots[idx_b].global_position
+	var mid := (pa + pb) * 0.5 + Vector3(0, 0.55, 0)
+	var bridge := Node3D.new()
+	add_child(bridge)
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.55, 0.65, 0.85)
+	mat.emission_enabled = true
+	mat.emission = Color(0.45, 0.55, 1.0)
+	mat.emission_energy_multiplier = 2.6
+	mat.roughness = 0.2
+	var steps := 14
+	var prev := pa
+	for s in range(1, steps + 1):
+		var tt := float(s) / float(steps)
+		var omt := 1.0 - tt
+		var pt := omt * omt * pa + 2.0 * omt * tt * mid + tt * tt * pb
+		var seg := MeshInstance3D.new()
+		var cm := CylinderMesh.new()
+		var d := prev.distance_to(pt)
+		cm.top_radius = 0.035
+		cm.bottom_radius = 0.035
+		cm.height = d
+		cm.radial_segments = 8
+		seg.mesh = cm
+		seg.set_surface_override_material(0, mat)
+		var segmid := (prev + pt) * 0.5
+		var dir := (pt - prev).normalized()
+		var up := Vector3.UP
+		if absf(dir.dot(up)) > 0.999:
+			up = Vector3.RIGHT
+		seg.look_at_from_position(segmid, segmid + dir, up)
+		seg.rotate_object_local(Vector3.RIGHT, PI * 0.5)
+		bridge.add_child(seg)
+		prev = pt
+	mag_connections.append({ "a": idx_a, "b": idx_b, "bridge": bridge })
+	bridge.scale = Vector3(1, 0.01, 1)
+	var t := create_tween().set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_BACK)
+	t.tween_property(bridge, "scale", Vector3.ONE, 0.4)
+	_check_mag_formation()
+
+
+func _check_mag_formation() -> void:
+	var active := false
+	for conn in mag_connections:
+		if mag_contents[conn["a"]] != null and mag_contents[conn["b"]] != null:
+			active = true
+			break
+	if not active:
+		_mag_active = false
+		_mag_eco = {}
+		mag_cast_btn.disabled = true
+		mag_ascend_btn.disabled = true
+		_refresh_tier_label()
+		return
+	var eids: Array = []
+	for i in MAG_COUNT:
+		if mag_contents[i] != null:
+			eids.append(mag_contents[i]["id"])
+	var eco := _economy(eids, MAG_BASE_DMG)
+	_mag_active = true
+	_mag_dominant = String(eco["dom"])
+	_mag_eco = eco
+	mag_cast_btn.disabled = false
+	mag_ascend_btn.disabled = false
+	_refresh_tier_label()
+
+
+func _on_mag_cast_pressed() -> void:
+	if _game_over or not _mag_active: return
+	var dmg := int(_mag_eco.get("dmg", 0))
+	var spi := int(_mag_eco.get("ess", 0))
+	var combo := String(_mag_eco.get("combo", ""))
+	var gain := int(_mag_eco.get("heal", 0)) + int(_mag_eco.get("drain", 0))
+	# Esoteric — ignores opponent shield
+	opponent_hp = max(0, opponent_hp - dmg)
+	var cap := "ESOTERIC"
+	if combo != "":
+		cap += " ✦" + combo
+	_flash_world_text("-%d  %s" % [dmg, cap], Vector3(0, 1.7, -1.0), Color(0.85, 0.55, 1.0))
+	if spi > 0:
+		_bank_spirit(spi)
+	if gain > 0:
+		player_hp = min(LIFE_START, player_hp + gain)
+		_flash_shield_on_player(gain, "+life")
+	_refresh_hp_labels()
+	_clear_mag_board()
+	_check_game_over()
+
+
+func _on_mag_surge_pressed() -> void:
+	if _game_over or not _mag_active: return
+	_bank_spirit(SURGE_SPIRIT)
+	_flash_world_text("MAG SURGE ↑  +%d spirit" % SURGE_SPIRIT, Vector3(0, 2.4, 0), Color(0.7, 0.8, 1.0))
+	_clear_mag_board()
+
+
+func _clear_mag_board() -> void:
+	for slot in mag_slots:
+		for ch in slot.get_children():
+			if ch is MeshInstance3D and ch.mesh is SphereMesh:
+				ch.queue_free()
+	for conn in mag_connections:
+		var b = conn.get("bridge")
+		if b != null and is_instance_valid(b):
+			b.queue_free()
+	mag_connections.clear()
+	for i in MAG_COUNT:
+		mag_contents[i] = null
+		mag_plasma_mat[i] = null
+		mag_plasma_color[i] = null
+	_mag_active = false
+	_mag_eco = {}
+	_mag_connector_slot1 = -1
+	mag_cast_btn.disabled = true
+	mag_ascend_btn.disabled = true
+	_refresh_tier_label()
+
+
+# ══════════════════════════════════════════════════════════════
+#  SPIRITUAL LAYER
+# ══════════════════════════════════════════════════════════════
+
+func _setup_spi_layer() -> void:
+	spi_vert_mat.resize(SPI_VERTS)
+	var s := 0.62
+	var base := [
+		Vector3(1, 1, 1), Vector3(1, -1, -1),
+		Vector3(-1, 1, -1), Vector3(-1, -1, 1),
+	]
+	var pts: Array = []
+	for b in base:
+		pts.append(b * s + Vector3(0, SPI_Y, 0))
+
+	for i in SPI_VERTS:
+		for j in range(i + 1, SPI_VERTS):
+			var a: Vector3 = pts[i]
+			var c: Vector3 = pts[j]
+			var d := a.distance_to(c)
+			var seg := MeshInstance3D.new()
+			var cm := CylinderMesh.new()
+			cm.top_radius = 0.012
+			cm.bottom_radius = 0.012
+			cm.height = d
+			cm.radial_segments = 6
+			seg.mesh = cm
+			var em := StandardMaterial3D.new()
+			em.albedo_color = Color(0.40, 0.40, 0.50)
+			em.emission_enabled = true
+			em.emission = Color(0.32, 0.28, 0.52)
+			em.emission_energy_multiplier = 0.5
+			seg.set_surface_override_material(0, em)
+			var m := (a + c) * 0.5
+			var dir := (c - a).normalized()
+			var up := Vector3.UP
+			if absf(dir.dot(up)) > 0.999:
+				up = Vector3.RIGHT
+			seg.look_at_from_position(m, m + dir, up)
+			seg.rotate_object_local(Vector3.RIGHT, PI * 0.5)
+			add_child(seg)
+			spi_edges.append({ "i": i, "j": j, "mat": em })
+
+	for i in SPI_VERTS:
+		var v := MeshInstance3D.new()
+		var sm := SphereMesh.new()
+		sm.radius = 0.13
+		sm.height = 0.26
+		v.mesh = sm
+		var vm := StandardMaterial3D.new()
+		vm.albedo_color = Color(0.30, 0.28, 0.40)
+		vm.emission_enabled = true
+		vm.emission = Color(0.25, 0.20, 0.40)
+		vm.emission_energy_multiplier = 0.6
+		v.set_surface_override_material(0, vm)
+		v.position = pts[i]
+		add_child(v)
+		spi_verts.append(v)
+		spi_vert_mat[i] = vm
+
+
+func _light_spi_vertex(i: int) -> void:
+	if spi_lit[i]: return
+	spi_lit[i] = true
+	var vm: StandardMaterial3D = spi_vert_mat[i]
+	var t := create_tween().set_parallel(true)
+	t.tween_property(vm, "emission", Color(0.70, 0.85, 1.0), 0.5)
+	t.tween_property(vm, "emission_energy_multiplier", 5.0, 0.5)
+	var sv: Node3D = spi_verts[i]
+	var p := create_tween()
+	p.tween_property(sv, "scale", Vector3(1.5, 1.5, 1.5), 0.25).set_trans(Tween.TRANS_BACK)
+	p.tween_property(sv, "scale", Vector3.ONE, 0.25)
+	for e in spi_edges:
+		if spi_lit[e["i"]] and spi_lit[e["j"]]:
+			var em: StandardMaterial3D = e["mat"]
+			var et := create_tween().set_parallel(true)
+			et.tween_property(em, "emission", Color(0.50, 0.70, 1.0), 0.5)
+			et.tween_property(em, "emission_energy_multiplier", 3.0, 0.5)
+
+
+func _can_transcend() -> bool:
+	if _game_over: return false
+	for v in spi_lit:
+		if not v: return false
+	return true
+
+
+func _update_transcend() -> void:
+	if transcend_btn:
+		transcend_btn.disabled = not _can_transcend()
+
+
+func _on_transcend_pressed() -> void:
+	if not _can_transcend(): return
+	opponent_hp = 0
+	_flash_world_text("✦  TRANSCENDENCE  ✦", Vector3(0, 2.7, 0), Color(1.0, 0.95, 0.6))
+	_refresh_hp_labels()
+	_check_game_over()
+
+
+# ══════════════════════════════════════════════════════════════
+#  LIFE, CREATURES & TURNS
+# ══════════════════════════════════════════════════════════════
+
+func _setup_combat_ui() -> void:
+	var canvas := get_node_or_null("CanvasLayer")
+	if canvas == null:
+		for ch in get_children():
+			if ch is CanvasLayer:
+				canvas = ch
+				break
+	if canvas == null:
+		canvas = CanvasLayer.new()
+		add_child(canvas)
+
+	var summon_btn := Button.new()
+	summon_btn.text = "SUMMON (-%d life)" % SUMMON_COST
+	summon_btn.custom_minimum_size = Vector2(170, 44)
+	summon_btn.anchor_left = 0.0
+	summon_btn.anchor_top = 1.0
+	summon_btn.anchor_bottom = 1.0
+	summon_btn.offset_left = 20.0
+	summon_btn.offset_right = 190.0
+	summon_btn.offset_top = -108.0
+	summon_btn.offset_bottom = -64.0
+	summon_btn.pressed.connect(_on_summon_pressed)
+	canvas.add_child(summon_btn)
+
+	var end_btn := Button.new()
+	end_btn.text = "END TURN ▶"
+	end_btn.custom_minimum_size = Vector2(170, 44)
+	end_btn.anchor_left = 0.0
+	end_btn.anchor_top = 1.0
+	end_btn.anchor_bottom = 1.0
+	end_btn.offset_left = 20.0
+	end_btn.offset_right = 190.0
+	end_btn.offset_top = -158.0
+	end_btn.offset_bottom = -114.0
+	end_btn.pressed.connect(_on_end_turn_pressed)
+	canvas.add_child(end_btn)
+
+	# Two demo enemy creatures so targeting can be shown
+	_summon_creature(-1)
+	_summon_creature(-1)
+	_refresh_hp_labels()
+
+
+func _creature_z(side: int) -> float:
+	return side * (HAND_Z - 1.05)
+
+
+func _summon_creature(side: int) -> void:
+	var list: Array = player_creatures if side > 0 else opponent_creatures
+	var root := Node3D.new()
+	var body := MeshInstance3D.new()
+	var cap := CapsuleMesh.new()
+	cap.radius = 0.13
+	cap.height = 0.5
+	body.mesh = cap
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.35, 0.85, 0.45) if side > 0 else Color(0.85, 0.30, 0.30)
+	mat.emission_enabled = true
+	mat.emission = (Color(0.10, 0.55, 0.20) if side > 0 else Color(0.55, 0.08, 0.08))
+	mat.emission_energy_multiplier = 1.4
+	mat.roughness = 0.4
+	body.set_surface_override_material(0, mat)
+	body.position.y = 0.28
+	root.add_child(body)
+	var lbl := Label3D.new()
+	lbl.font_size = 28
+	lbl.pixel_size = 0.004
+	lbl.modulate = Color.WHITE
+	lbl.outline_size = 6
+	lbl.outline_modulate = Color.BLACK
+	lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	lbl.position = Vector3(0, 0.62, 0)
+	root.add_child(lbl)
+	var area := Area3D.new()
+	var sh := CollisionShape3D.new()
+	var bx := BoxShape3D.new()
+	bx.size = Vector3(0.34, 0.6, 0.34)
+	sh.shape = bx
+	sh.position.y = 0.3
+	area.add_child(sh)
+	add_child(root)
+	var cd := { "node": root, "hp": CREATURE_HP, "max_hp": CREATURE_HP,
+		"atk": CREATURE_ATK, "target": null, "lbl": lbl, "side": side }
+	list.append(cd)
+	area.input_event.connect(_on_creature_input.bind(side, cd))
+	root.add_child(area)
+	root.scale = Vector3(0.01, 0.01, 0.01)
+	var t := create_tween().set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_BACK)
+	t.tween_property(root, "scale", Vector3.ONE, 0.35)
+	_layout_creatures(side)
+	_update_creature_label(cd)
+
+
+func _layout_creatures(side: int) -> void:
+	var list: Array = player_creatures if side > 0 else opponent_creatures
+	var n := list.size()
+	if n == 0: return
+	var start_x := -(n - 1) * 0.5 * 0.55
+	for i in n:
+		var cd = list[i]
+		var node: Node3D = cd["node"]
+		node.position = Vector3(start_x + i * 0.55, 0.0, _creature_z(side))
+
+
+func _update_creature_label(cd: Dictionary) -> void:
+	var lbl: Label3D = cd["lbl"]
+	var tag := ""
+	if cd["side"] > 0 and cd["target"] != null:
+		tag = " →⚔"
+	lbl.text = "%d/%d%s" % [cd["hp"], cd["max_hp"], tag]
+
+
+func _on_creature_input(_c, event, _p, _n, _i, side: int, cd: Dictionary) -> void:
+	if not (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT):
+		return
+	if _game_over: return
+	if side > 0:
+		_sel_creature = player_creatures.find(cd)
+		_flash_world_text("creature selected — click an enemy to target", Vector3(0, 1.3, 1.6), Color(0.6, 1.0, 0.7))
+	else:
+		if _sel_creature >= 0 and _sel_creature < player_creatures.size():
+			player_creatures[_sel_creature]["target"] = cd
+			_update_creature_label(player_creatures[_sel_creature])
+			_flash_world_text("target locked", Vector3(0, 1.3, 0.0), Color(1.0, 0.7, 0.5))
+			_sel_creature = -1
+
+
+func _on_summon_pressed() -> void:
+	if _game_over: return
+	if player_hp <= SUMMON_COST:
+		_flash_world_text("not enough life to summon", Vector3(0, 1.2, 2.0), Color(1.0, 0.5, 0.5))
+		return
+	player_hp -= SUMMON_COST
+	_summon_creature(1)
+	_flash_world_text("summoned (-%d life)" % SUMMON_COST, Vector3(0, 1.2, 2.0), Color(0.6, 1.0, 0.7))
+	_refresh_hp_labels()
+	_check_game_over()
+
+
+func _on_end_turn_pressed() -> void:
+	if _game_over: return
+	_resolve_creatures(player_creatures, opponent_creatures, false)
+	_resolve_creatures(opponent_creatures, player_creatures, true)
+	_layout_creatures(1)
+	_layout_creatures(-1)
+	_refresh_hp_labels()
+	_check_game_over()
+
+
+func _resolve_creatures(attackers: Array, _enemies: Array, hits_player: bool) -> void:
+	for cd in attackers.duplicate():
+		if not is_instance_valid(cd["node"]): continue
+		var tgt = cd["target"]
+		if tgt != null and is_instance_valid(tgt.get("node")) and tgt["hp"] > 0:
+			tgt["hp"] -= cd["atk"]
+			_flash_world_text("-%d" % cd["atk"], tgt["node"].global_position + Vector3(0, 0.9, 0), Color(1.0, 0.4, 0.4))
+			if tgt["hp"] <= 0:
+				_kill_creature(tgt)
+				cd["target"] = null
+			else:
+				_update_creature_label(tgt)
+		else:
+			cd["target"] = null
+			if hits_player:
+				var ab: int = min(player_shield, cd["atk"])
+				player_shield -= ab
+				player_hp = max(0, player_hp - (cd["atk"] - ab))
+			else:
+				var ab2: int = min(opponent_shield, cd["atk"])
+				opponent_shield -= ab2
+				opponent_hp = max(0, opponent_hp - (cd["atk"] - ab2))
+		_update_creature_label(cd)
+
+
+func _kill_creature(cd: Dictionary) -> void:
+	player_creatures.erase(cd)
+	opponent_creatures.erase(cd)
+	if is_instance_valid(cd["node"]):
+		var node: Node3D = cd["node"]
+		var t := create_tween()
+		t.tween_property(node, "scale", Vector3.ZERO, 0.25).set_ease(Tween.EASE_IN)
+		t.tween_callback(node.queue_free)
+
+
+func _check_game_over() -> void:
+	if _game_over: return
+	if opponent_hp <= 0:
+		_game_over = true
+		formation_label.text = "★  VICTORY  ★"
+		_flash_world_text("★  VICTORY  ★", Vector3(0, 2.6, 0), Color(1.0, 0.9, 0.4))
+	elif player_hp <= 0:
+		_game_over = true
+		formation_label.text = "✖  DEFEAT  ✖"
+		_flash_world_text("✖  DEFEAT  ✖", Vector3(0, 2.6, 0), Color(1.0, 0.3, 0.3))
+	if _game_over:
+		cast_btn.disabled = true
+		ascend_btn.disabled = true
+		mag_cast_btn.disabled = true
+		mag_ascend_btn.disabled = true
+		transcend_btn.disabled = true
+
+
+# ══════════════════════════════════════════════════════════════
+#  TIER READOUT
+# ══════════════════════════════════════════════════════════════
+
+func _refresh_tier_label() -> void:
+	if tier_label == null: return
+	var un := 0
+	for u in mag_unlocked:
+		if u: un += 1
+	var lit := 0
+	for l in spi_lit:
+		if l: lit += 1
+	var line := "MAGICAL %d/%d  ·  ESSENCE %d   |   SPIRIT %d  ·  POLYHEDRON %d/%d" % [
+		un, MAG_COUNT, essence, spirit, lit, SPI_VERTS]
+	if _mag_active and not _mag_eco.is_empty():
+		var c := ""
+		if String(_mag_eco.get("combo", "")) != "":
+			c = "  ✦%s" % _mag_eco["combo"]
+		line += "\nMAG CAST → %d esoteric  ·  +%d spirit%s   |   MAG SURGE ↑ → +%d spirit" % [
+			int(_mag_eco["dmg"]), int(_mag_eco["ess"]), c, SURGE_SPIRIT]
+	tier_label.text = line
+
+
+func _flash_world_text(txt: String, pos: Vector3, col: Color) -> void:
+	var lbl := Label3D.new()
+	lbl.text = txt
+	lbl.font_size = 42
+	lbl.pixel_size = 0.005
+	lbl.modulate = col
+	lbl.outline_size = 8
+	lbl.outline_modulate = Color.BLACK
+	lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	lbl.position = pos
+	add_child(lbl)
+	var t := create_tween().set_parallel(true)
+	t.tween_property(lbl, "position:y", pos.y + 1.0, 1.1)
+	t.tween_property(lbl, "modulate:a", 0.0, 1.1).set_delay(0.4)
+	t.chain().tween_callback(lbl.queue_free)
