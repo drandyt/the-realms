@@ -104,8 +104,9 @@ var _active_dominant: String      = ""
 var _active_spell_name: String    = ""
 var _has_active_formation := false
 
-var player_hp   := 30
-var opponent_hp := 30
+const START_LIFE := 100
+var player_hp   := START_LIFE
+var opponent_hp := START_LIFE
 var player_shield   := 0
 var opponent_shield := 0
 
@@ -120,6 +121,8 @@ var hp_opp_label: Label
 var turn_label: Label
 var canvas: CanvasLayer
 var _overlay: Control
+var book_btn: Button
+var book_panel: Control
 
 
 func _ready() -> void:
@@ -340,7 +343,81 @@ func _setup_ui() -> void:
 	hp_player_label.add_theme_font_size_override("font_size", 22)
 	canvas.add_child(hp_player_label)
 
+	_setup_spellbook()
 	_refresh_hp_labels()
+
+
+func _setup_spellbook() -> void:
+	book_btn = Button.new()
+	book_btn.text = "Spellbook"
+	book_btn.custom_minimum_size = Vector2(130, 40)
+	book_btn.anchor_left = 1.0;  book_btn.anchor_right = 1.0
+	book_btn.offset_left = -150.0;  book_btn.offset_right = -20.0
+	book_btn.offset_top  = 18.0;    book_btn.offset_bottom = 58.0
+	book_btn.pressed.connect(_on_book_pressed)
+	canvas.add_child(book_btn)
+
+	book_panel = PanelContainer.new()
+	book_panel.anchor_left = 1.0;  book_panel.anchor_right = 1.0
+	book_panel.anchor_top  = 0.0;  book_panel.anchor_bottom = 1.0
+	book_panel.offset_left = -440.0;  book_panel.offset_right = -16.0
+	book_panel.offset_top  = 66.0;    book_panel.offset_bottom = -16.0
+	book_panel.visible = false
+	canvas.add_child(book_panel)
+
+	var scroll := ScrollContainer.new()
+	book_panel.add_child(scroll)
+
+	var text := Label.new()
+	text.text = _build_book_text()
+	text.add_theme_font_size_override("font_size", 15)
+	text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	text.custom_minimum_size = Vector2(404, 0)
+	scroll.add_child(text)
+
+
+func _on_book_pressed() -> void:
+	book_panel.visible = not book_panel.visible
+	book_btn.text = "Close Book" if book_panel.visible else "Spellbook"
+
+
+func _build_book_text() -> String:
+	var s := "THE REALMS — SPELLBOOK\n"
+	s += "════════════════════════\n\n"
+	s += "HOW TO PLAY\n"
+	s += "• Click an element card, then click one of your\n"
+	s += "  silver cups to place it.\n"
+	s += "• Play a CONNECTOR card, then click two adjacent\n"
+	s += "  cups to link them.\n"
+	s += "• Fill + connect all cups of a formation to arm it,\n"
+	s += "  then press CAST.\n"
+	s += "• Press End Turn to let the opponent act.\n"
+	s += "• Start LIFE: %d each.\n\n" % START_LIFE
+	s += "YOUR CUP LAYOUT (indices)\n"
+	s += "  [0][1][2][3]   back row (toward foe)\n"
+	s += "  [4][5][6][7]   front row (toward you)\n\n"
+	s += "FORMATIONS\n"
+	s += "────────────────────────\n"
+	for f in FORMATIONS:
+		var fname: String = f["name"]
+		var dmg: int = FORMATION_BASE_DAMAGE.get(fname, 0)
+		var shd: int = FORMATION_SHIELD.get(fname, 0)
+		var tag := ""
+		if dmg > 0: tag = "%d dmg" % dmg
+		elif shd > 0: tag = "+%d shield" % shd
+		s += "%s  (cups %s)  — %s\n" % [
+			fname, str(f["slots"]).replace(" ", ""), tag]
+		s += "   %s\n" % f["effect"]
+	s += "\nELEMENT POWER MULTIPLIER\n"
+	s += "────────────────────────\n"
+	for k in ELEMENT_MULTIPLIER:
+		s += "  %s ×%s\n" % [str(k).capitalize(), str(ELEMENT_MULTIPLIER[k])]
+	s += "\nSPELL NAMES (formation + element)\n"
+	s += "────────────────────────\n"
+	for key in SPELLS:
+		var parts: PackedStringArray = str(key).split("_")
+		s += "  %s + %s = %s\n" % [parts[0], parts[1], SPELLS[key]]
+	return s
 
 
 # ── Deck & hand ───────────────────────────────────────────────
@@ -937,8 +1014,8 @@ func _on_cast_pressed() -> void:
 
 
 func _refresh_hp_labels() -> void:
-	hp_opp_label.text    = "OPPONENT  HP %d   ⛨ %d" % [opponent_hp, opponent_shield]
-	hp_player_label.text = "YOU       HP %d   ⛨ %d" % [player_hp,   player_shield]
+	hp_opp_label.text    = "OPPONENT  LIFE %d   ⛨ %d" % [opponent_hp, opponent_shield]
+	hp_player_label.text = "YOU       LIFE %d   ⛨ %d" % [player_hp,   player_shield]
 
 
 func _flash_damage_on_opponent(dmg: int, label: String) -> void:
