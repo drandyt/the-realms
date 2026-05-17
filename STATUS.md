@@ -14,6 +14,12 @@ _Last updated: 2026-05-17 — Duty MGR full audit-and-reconcile: docs were syste
 
 ## Duty MGR log
 
+### 2026-05-17 — Human MGR engage + close (no game code)
+- Human MGR seat engaged, re-synced (git log + STATUS + inbox). Found STATUS already fully reconciled by the audit Duty MGR below — left it intact, no rewrite.
+- Git hygiene only: added `.claude/` to `.gitignore` (untracked local harness dir, was the sole working-tree noise). No `.gd`/`.tscn` touched.
+- Noted commit `227aa55` "strip Director coupling — The Realms stands alone" — session/clearance model has changed; future sessions should follow current CLAUDE-MGR.md, not the stale Director-inbox protocol.
+- Session closed same sitting.
+
 ### 2026-05-17 — Full audit-and-reconcile (Director Duty MGR, one-shot)
 - **Brief:** docs known to be systematically stale; STATUS under-reporting real progress across multiple commits. Determine TRUE state by reading `main.gd` and rewrite STATUS to match reality exactly. Audit + doc only — no game code touched.
 - **Method:** read `main.gd` (~1818 lines) by section + targeted greps. No runtime/in-editor test — findings are from code inspection.
