@@ -98,6 +98,7 @@ var _selected_card_data: Dictionary = {}
 var _has_selection      := false
 var _connector_slot1    := -1
 var _slot_highlights: Array[Node3D] = []
+var _highlight_tweens: Array = []   # looping pink-pulse tweens for connector targets
 
 # Drag & drop
 var _dragging      := false
@@ -106,10 +107,17 @@ var _press_pos     := Vector2.ZERO
 var _hover_ring: MeshInstance3D = null
 
 var _active_formation_highlights: Array[Node3D] = []
-var _active_formation: Dictionary = {}   # currently castable formation
-var _active_dominant: String      = ""
-var _active_spell_name: String    = ""
-var _has_active_formation := false
+
+# Unified castable-spell list (replaces the old single-formation + cast buttons).
+# Each entry: { layer, name, slots, dom, title, effect, dmg/shield meta, key }.
+var _spells: Array = []
+var _cast_locked: Dictionary = {}      # spell key -> already cast THIS turn
+var _spell_list_vbox: VBoxContainer
+var _spell_panel: PanelContainer
+
+# Which layer the player is currently acting on. Others are dimmed + inert.
+var _active_layer := "earth"
+var _layer_tab_btns: Dictionary = {}   # "earth"/"magic"/"spirit" -> Button
 
 const START_LIFE := 100
 var player_hp   := START_LIFE
@@ -120,7 +128,6 @@ var opponent_shield := 0
 var _cam: Camera3D
 var deck_label: Label
 var formation_label: Label
-var cast_btn: Button
 var draw_btn: Button
 var end_turn_btn: Button
 var hp_player_label: Label
@@ -163,16 +170,10 @@ const POWER_NAMES := ["FULL POWER", "HALF / BUILD", "CHANNEL ALL"]
 
 var essence_label: Label
 var power_btn: Button
-var cast_magic_btn: Button
-var cast_spirit_btn: Button
 var spirit_label: Label
 
 var _m_connector_slot1 := -1
 var _s_connector_slot1 := -1
-var _active_m_formation: Dictionary = {}
-var _active_s_formation: Dictionary = {}
-var _active_m_spell := ""
-var _active_s_spell := ""
 
 # Magic formations — index sets over the 8 magic cups (same 0..7 grid)
 const MAGIC_FORMATIONS: Array[Dictionary] = [
@@ -399,30 +400,25 @@ func _setup_ui() -> void:
 	trim.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	canvas.add_child(trim)
 
-	# Six evenly-spaced action buttons in one row inside the bar
-	var labels := ["Draw Hand", "End Turn", "Cast Power: FULL", "CAST", "CAST MAGIC", "CAST SPIRIT"]
+	# Action buttons in one row inside the bar. Casting now lives in the
+	# right-side spell list, so the bar only holds turn / power controls.
+	var labels := ["Draw Hand", "End Turn", "Cast Power: FULL"]
 	var btns: Array[Button] = []
-	var step := 166.0
-	var start := -((6 - 1) * step + 150.0) / 2.0
-	for i in 6:
+	var step := 230.0
+	var start := -((labels.size() - 1) * step + 200.0) / 2.0
+	for i in labels.size():
 		var b := Button.new()
 		b.text = labels[i]
 		b.add_theme_font_size_override("font_size", 19)
 		b.anchor_left = 0.5;  b.anchor_right = 0.5
 		b.anchor_top = 1.0;   b.anchor_bottom = 1.0
 		b.offset_left = start + i * step
-		b.offset_right = b.offset_left + 150.0
+		b.offset_right = b.offset_left + 200.0
 		b.offset_top = -90.0;  b.offset_bottom = -34.0
 		canvas.add_child(b);  btns.append(b)
 	draw_btn       = btns[0];  draw_btn.pressed.connect(_on_draw_pressed)
 	end_turn_btn   = btns[1];  end_turn_btn.pressed.connect(_on_end_turn_pressed)
 	power_btn      = btns[2];  power_btn.pressed.connect(_on_power_pressed)
-	cast_btn       = btns[3];  cast_btn.pressed.connect(_on_cast_pressed)
-	cast_magic_btn = btns[4];  cast_magic_btn.pressed.connect(_on_cast_magic_pressed)
-	cast_spirit_btn= btns[5];  cast_spirit_btn.pressed.connect(_on_cast_spirit_pressed)
-	cast_btn.disabled = true
-	cast_magic_btn.disabled = true
-	cast_spirit_btn.disabled = true
 
 	# Big decorative spell / formation banner above the bar
 	formation_label = Label.new()
@@ -476,7 +472,58 @@ func _setup_ui() -> void:
 	_setup_spellbook()
 	_setup_layer_ui()
 	_setup_shape_list()
+	_setup_layer_tabs()
+	_setup_spell_panel()
 	_refresh_hp_labels()
+
+
+# Right-edge layer selector. Tap a tab to act on that layer; the others
+# dim out so the board is not crowded.
+func _setup_layer_tabs() -> void:
+	var defs := [["earth", "EARTH", Color(0.55,0.90,0.55)],
+				 ["magic", "MAGIC", Color(0.78,0.50,1.0)],
+				 ["spirit","SPIRIT",Color(1.0,0.86,0.45)]]
+	for i in defs.size():
+		var key: String = defs[i][0]
+		var b := Button.new()
+		b.text = defs[i][1]
+		b.toggle_mode = true
+		b.add_theme_font_size_override("font_size", 18)
+		b.add_theme_color_override("font_color", defs[i][2])
+		b.anchor_left = 1.0;  b.anchor_right = 1.0
+		b.anchor_top = 0.0;   b.anchor_bottom = 0.0
+		b.offset_left = -118.0;  b.offset_right = -16.0
+		b.offset_top = 104.0 + i * 52.0;  b.offset_bottom = b.offset_top + 46.0
+		b.pressed.connect(_set_active_layer.bind(key))
+		canvas.add_child(b)
+		_layer_tab_btns[key] = b
+	_set_active_layer("earth")
+
+
+# Right-side list of every spell you can currently cast. Click to cast.
+func _setup_spell_panel() -> void:
+	_spell_panel = PanelContainer.new()
+	_spell_panel.anchor_left = 1.0;  _spell_panel.anchor_right = 1.0
+	_spell_panel.anchor_top = 0.0;   _spell_panel.anchor_bottom = 1.0
+	_spell_panel.offset_left = -300.0;  _spell_panel.offset_right = -16.0
+	_spell_panel.offset_top = 268.0;    _spell_panel.offset_bottom = -132.0
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.05, 0.03, 0.09, 0.80)
+	sb.border_color = Color(0.85, 0.70, 0.30, 0.6)
+	sb.set_border_width_all(2)
+	sb.set_corner_radius_all(6)
+	sb.set_content_margin_all(8)
+	_spell_panel.add_theme_stylebox_override("panel", sb)
+	canvas.add_child(_spell_panel)
+
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_spell_panel.add_child(scroll)
+	_spell_list_vbox = VBoxContainer.new()
+	_spell_list_vbox.add_theme_constant_override("separation", 6)
+	_spell_list_vbox.custom_minimum_size = Vector2(260, 0)
+	scroll.add_child(_spell_list_vbox)
+	_refresh_spells()
 
 
 # Always-visible left panel: every shape + its spell names
@@ -825,6 +872,8 @@ const _DRAG_THRESHOLD := 8.0
 func _input(event: InputEvent) -> void:
 	if _turn != "player" or _game_over: return
 	if not _has_selection: return
+	# Drag-to-board is Earth-only; Magic/Spirit place via click on their cups.
+	if _active_layer != "earth": return
 
 	if event is InputEventMouseMotion:
 		if _maybe_drag and (event.button_mask & MOUSE_BUTTON_MASK_LEFT) \
@@ -844,13 +893,25 @@ func _input(event: InputEvent) -> void:
 			var idx := _earth_slot_at(w) if w != null else -1
 			_dragging = false;  _maybe_drag = false
 			_clear_hover()
-			if idx >= 0:
-				if _selected_card_data.get("type") == "connector":
-					_handle_connector_slot_click(idx)
+			if _selected_card_data.get("type") == "connector":
+				if _connector_slot1 == -1:
+					# Choosing the first anchor cup.
+					if idx >= 0:
+						_handle_connector_slot_click(idx)   # sets anchor + pink pulse
+						_park_selected_card()               # tuck card away, stay selected
+					else:
+						_return_card_to_hand()              # dropped on nothing → ping back
 				else:
-					_play_to_slot(idx)
+					# Choosing the second cup — must be eligible to proceed.
+					if idx == _connector_slot1 or _is_adjacent(_connector_slot1, idx):
+						_handle_connector_slot_click(idx)
+					# Ineligible drop: stay pending — can't move on until a
+					# highlighted neighbour is picked.
 			else:
-				_deselect_card();  _layout_hand()
+				if idx >= 0:
+					_play_to_slot(idx)
+				else:
+					_return_card_to_hand()                  # no eligible cup → ping back
 		else:
 			_maybe_drag = false   # was a plain click — keep click-flow selection
 
@@ -866,12 +927,15 @@ func _world_on_board(mpos: Vector2):
 func _earth_slot_at(world) -> int:
 	if world == null: return -1
 	var start_x := -(COLS - 1) * SLOT_GAP_X / 2.0
-	var col := int(round((world.x - start_x) / SLOT_GAP_X))
-	var row := int(round((world.z - SLOT_NEAR_Z) / SLOT_GAP_Z))
-	if col < 0 or col >= COLS or row < 0 or row >= ROWS: return -1
-	var sx := start_x + col * SLOT_GAP_X
-	var sz := SLOT_NEAR_Z + row * SLOT_GAP_Z
-	if Vector2(world.x - sx, world.z - sz).length() > 0.40: return -1
+	var fcol: float = (world.x - start_x) / SLOT_GAP_X
+	var frow: float = (world.z - SLOT_NEAR_Z) / SLOT_GAP_Z
+	# Snap to the NEAREST cup. Drops in the gaps between cups no longer fall
+	# through — they bind to whichever cup is closest. Only a release well
+	# outside the whole grid (half a cell of slack) returns -1 (ping back).
+	if fcol < -0.5 or fcol > COLS - 0.5 or frow < -0.5 or frow > ROWS - 0.5:
+		return -1
+	var col: int = clampi(int(round(fcol)), 0, COLS - 1)
+	var row: int = clampi(int(round(frow)), 0, ROWS - 1)
 	return row * COLS + col
 
 
@@ -907,6 +971,7 @@ func _on_slot_input(_cam2, event, _pos, _normal, _idx, slot_idx: int) -> void:
 	if not (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT):
 		return
 	if _turn != "player" or _game_over: return
+	if _active_layer != "earth": return
 	if not _has_selection:
 		_take_back_from_slot(slot_idx)
 		return
@@ -916,24 +981,50 @@ func _on_slot_input(_cam2, event, _pos, _normal, _idx, slot_idx: int) -> void:
 		_play_to_slot(slot_idx)
 
 
-# Click a filled cup with an empty-ish hand to pull the element back.
-func _take_back_from_slot(idx: int) -> void:
-	if slot_contents[idx] == null: return
-	if player_hand.size() >= HAND_COUNT:
-		formation_label.text = "Hand is full — play or draw before reclaiming"
-		return
-	var data: Dictionary = slot_contents[idx]
-	# Detach any connectors touching this cup; recycle them to the deck.
+# A reclaimed card returns to the HAND if there's room (5 max), otherwise
+# it recycles into the deck. Never lost.
+func _reclaim_card(data) -> void:
+	if data == null: return
+	if player_hand.size() < HAND_COUNT:
+		_add_card_to_hand(data)
+	else:
+		_return_to_deck(data)
+
+
+# Detach every connector touching cup idx; each one returns to hand/deck.
+func _detach_connectors_at(idx: int) -> void:
 	var kept: Array = []
 	for conn in connections:
 		if conn["a"] == idx or conn["b"] == idx:
 			var b = conn.get("bridge")
 			if b != null and is_instance_valid(b): b.queue_free()
-			_return_to_deck(CONNECTOR)
+			_reclaim_card(CONNECTOR)
 		else:
 			kept.append(conn)
 	connections = kept
 	_rebuild_connector_graph()
+
+
+# Click a cup with no card selected to pull its contents back to hand:
+#  - has an element  → reclaim the element + any connectors on it
+#  - empty but linked → reclaim just the connectors touching it
+func _take_back_from_slot(idx: int) -> void:
+	var has_conn := false
+	for conn in connections:
+		if conn["a"] == idx or conn["b"] == idx:
+			has_conn = true;  break
+
+	if slot_contents[idx] == null:
+		if not has_conn: return
+		_detach_connectors_at(idx)
+		_check_formations()
+		return
+
+	if player_hand.size() >= HAND_COUNT:
+		formation_label.text = "Hand is full — play or draw before reclaiming"
+		return
+	var data: Dictionary = slot_contents[idx]
+	_detach_connectors_at(idx)
 	_free_plasma_in(player_slots[idx])
 	slot_contents[idx]     = null
 	slot_plasma_mat[idx]   = null
@@ -984,6 +1075,35 @@ func _deselect_card() -> void:
 	_has_selection = false;  _selected_card_node = null;  _selected_card_data = {}
 	_connector_slot1 = -1;  _clear_slot_highlights()
 	_dragging = false;  _maybe_drag = false;  _clear_hover()
+
+
+func _hand_x_for(card: Node3D) -> float:
+	# X position this card would occupy in the laid-out hand.
+	var i := player_hand.find(card)
+	if i < 0: return 0.0
+	return -(player_hand.size() - 1) * HAND_SPACING / 2.0 + i * HAND_SPACING
+
+
+# Drag released with no eligible target — glide the card back into the hand.
+func _return_card_to_hand() -> void:
+	var card := _selected_card_node
+	_has_selection = false;  _selected_card_node = null;  _selected_card_data = {}
+	_connector_slot1 = -1;  _clear_slot_highlights();  _clear_hover()
+	_dragging = false;  _maybe_drag = false
+	if is_instance_valid(card):
+		var t := create_tween().set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_BACK)
+		t.tween_property(card, "position",
+			Vector3(_hand_x_for(card), 0.025, HAND_Z), 0.22)
+
+
+# First connector anchor chosen via drag — tuck the card back near the hand so
+# it isn't left stuck on the board, but keep it selected for the second pick.
+func _park_selected_card() -> void:
+	if not is_instance_valid(_selected_card_node): return
+	var card := _selected_card_node
+	var t := create_tween().set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_BACK)
+	t.tween_property(card, "position",
+		Vector3(_hand_x_for(card), 0.025, HAND_Z), 0.18)
 
 
 # ── Play element card ─────────────────────────────────────────
@@ -1276,20 +1396,34 @@ func _handle_connector_slot_click(idx: int) -> void:
 
 func _highlight_adjacent_slots(origin: int) -> void:
 	_clear_slot_highlights()
+	var pink := Color(1.0, 0.22, 0.62)
 	for i in player_slots.size():
 		if not _is_adjacent(origin, i): continue
 		var ring := MeshInstance3D.new();  var rm := CylinderMesh.new()
 		rm.top_radius = 0.34;  rm.bottom_radius = 0.34;  rm.height = 0.010;  rm.radial_segments = 32
 		ring.mesh = rm
 		var mat := StandardMaterial3D.new()
-		mat.albedo_color = Color(0.30,0.80,0.90);  mat.emission_enabled = true
-		mat.emission = Color(0.30,0.80,0.90);  mat.emission_energy_multiplier = 2.0
+		mat.albedo_color = pink;  mat.emission_enabled = true
+		mat.emission = pink;  mat.emission_energy_multiplier = 2.0
 		ring.set_surface_override_material(0, mat)
 		ring.position = player_slots[i].position + Vector3(0,0.005,0)
 		add_child(ring);  _slot_highlights.append(ring)
+		# Pink "breathing" pulse so the eligible cups read as call-to-action.
+		var et := create_tween().set_loops() \
+			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+		et.tween_property(mat, "emission_energy_multiplier", 4.6, 0.55)
+		et.tween_property(mat, "emission_energy_multiplier", 1.4, 0.55)
+		var st := create_tween().set_loops() \
+			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+		st.tween_property(ring, "scale", Vector3(1.12, 1.0, 1.12), 0.55)
+		st.tween_property(ring, "scale", Vector3.ONE, 0.55)
+		_highlight_tweens.append(et);  _highlight_tweens.append(st)
 
 
 func _clear_slot_highlights() -> void:
+	for t in _highlight_tweens:
+		if t != null and t.is_valid(): t.kill()
+	_highlight_tweens.clear()
 	for h in _slot_highlights:
 		if is_instance_valid(h): h.queue_free()
 	_slot_highlights.clear()
@@ -1380,87 +1514,6 @@ func _apply_merge(idx_a: int, idx_b: int, stream_mat: StandardMaterial3D) -> voi
 	st.chain().tween_property(stream_mat, "emission", glow, 0.5).set_ease(Tween.EASE_OUT)
 
 
-# ── Formation detection ───────────────────────────────────────
-
-func _check_formations() -> void:
-	for formation in FORMATIONS:
-		var fslots: Array = formation["slots"]
-
-		# All slots must have plasma
-		var all_filled := true
-		for i in fslots:
-			if slot_contents[i] == null:
-				all_filled = false;  break
-		if not all_filled: continue
-
-		# At least one connection must link two slots inside the formation
-		var connected := false
-		for conn in connections:
-			if conn["a"] in fslots and conn["b"] in fslots:
-				connected = true;  break
-		if not connected: continue
-
-		# Dominant element
-		var counts: Dictionary = {}
-		for i in fslots:
-			if slot_contents[i] != null:
-				var eid: String = slot_contents[i]["id"]
-				counts[eid] = counts.get(eid, 0) + 1
-		var dominant := ""
-		var best := 0
-		for k in counts:
-			if counts[k] > best:  best = counts[k];  dominant = k
-
-		_show_formation(formation, dominant, fslots)
-		return   # show first matched formation only
-
-	# No formation — clear display
-	_clear_active_formation()
-	formation_label.text = ""
-
-
-func _show_formation(formation: Dictionary, element: String, fslots: Array) -> void:
-	var fname: String = formation["name"]
-	var spell_key := fname + "_" + element
-	var spell: String = SPELLS.get(spell_key, element.capitalize() + " " + fname)
-
-	_active_formation     = formation
-	_active_dominant      = element
-	_active_spell_name    = spell
-	_has_active_formation = true
-	cast_btn.disabled     = false
-
-	formation_label.text = "✦ %s  ·  %s\n%s" % [spell.to_upper(), fname, formation["effect"]]
-
-	# Highlight slots in formation with gold rings
-	_clear_active_formation_visuals()
-	for i in fslots:
-		var ring := MeshInstance3D.new();  var rm := CylinderMesh.new()
-		rm.top_radius = 0.34;  rm.bottom_radius = 0.34;  rm.height = 0.010;  rm.radial_segments = 32
-		ring.mesh = rm
-		var mat := StandardMaterial3D.new()
-		mat.albedo_color = Color(1.0,0.85,0.2);  mat.emission_enabled = true
-		mat.emission = Color(1.0,0.85,0.2);  mat.emission_energy_multiplier = 2.5
-		ring.set_surface_override_material(0, mat)
-		ring.position = player_slots[i].position + Vector3(0,0.006,0)
-		add_child(ring);  _active_formation_highlights.append(ring)
-
-
-func _clear_active_formation() -> void:
-	_active_formation     = {}
-	_active_dominant      = ""
-	_active_spell_name    = ""
-	_has_active_formation = false
-	cast_btn.disabled     = true
-	_clear_active_formation_visuals()
-
-
-func _clear_active_formation_visuals() -> void:
-	for h in _active_formation_highlights:
-		if is_instance_valid(h): h.queue_free()
-	_active_formation_highlights.clear()
-
-
 # ── Cast / damage ─────────────────────────────────────────────
 
 const FORMATION_BASE_DAMAGE: Dictionary = {
@@ -1479,18 +1532,142 @@ const ELEMENT_MULTIPLIER: Dictionary = {
 }
 
 
-func _on_cast_pressed() -> void:
+# ── Spell list (replaces single-formation + cast buttons) ─────
+
+# Board changed anywhere → just rebuild the castable list.
+func _check_formations() -> void:
+	_refresh_spells()
+
+
+func _check_layer_formation(_layer: String) -> void:
+	_refresh_spells()
+
+
+# Kept for the few callers that "drop the current spell" (cast / end turn).
+func _clear_active_formation() -> void:
+	formation_label.text = ""
+	_refresh_spells()
+
+
+func _dominant_of(contents: Array, slots: Array) -> String:
+	var counts: Dictionary = {}
+	for i in slots:
+		if contents[i] != null:
+			var eid: String = contents[i]["id"]
+			counts[eid] = counts.get(eid, 0) + 1
+	var dom := "";  var best := 0
+	for k in counts:
+		if counts[k] > best:  best = counts[k];  dom = k
+	return dom
+
+
+func _scan_layer(layer: String, list: Array, contents: Array, conns: Array,
+		slots_present) -> void:
+	for f in list:
+		var fslots: Array = f["slots"]
+		var ok := true
+		for i in fslots:
+			if i >= contents.size() or contents[i] == null \
+					or (slots_present != null and slots_present[i] == null):
+				ok = false;  break
+		if not ok: continue
+		var linked := false
+		for conn in conns:
+			if conn["a"] in fslots and conn["b"] in fslots:
+				linked = true;  break
+		if not linked: continue
+		var fname: String = f["name"]
+		var dom := _dominant_of(contents, fslots)
+		var title: String
+		if layer == "earth":
+			title = SPELLS.get(fname + "_" + dom, dom.capitalize() + " " + fname)
+		else:
+			title = "%s %s" % [dom.capitalize(), fname]
+		var sig: Array = fslots.duplicate();  sig.sort()
+		_spells.append({
+			"layer": layer, "name": fname, "slots": fslots, "dom": dom,
+			"title": title, "effect": f["effect"],
+			"key": "%s:%s:%s" % [layer, fname, str(sig)],
+		})
+
+
+func _scan_formations() -> void:
+	_spells = []
+	_scan_layer("earth", FORMATIONS, slot_contents, connections, null)
+	var any_magic := magic_unlocked.has(true)
+	if any_magic:
+		_scan_layer("magic", MAGIC_FORMATIONS, m_slot_contents,
+			m_connections, magic_player_slots)
+	if spirit_unlocked:
+		_scan_layer("spirit", SPIRIT_FORMATIONS, s_slot_contents,
+			s_connections, spirit_player_slots)
+
+
+func _refresh_spells() -> void:
+	if _spell_list_vbox == null: return
+	_scan_formations()
+	for c in _spell_list_vbox.get_children():
+		c.queue_free()
+
+	var hdr := Label.new()
+	hdr.text = "✦ CASTABLE SPELLS"
+	hdr.add_theme_font_size_override("font_size", 16)
+	hdr.add_theme_color_override("font_color", Color(1.0, 0.88, 0.45))
+	_spell_list_vbox.add_child(hdr)
+
+	if _spells.is_empty():
+		var none := Label.new()
+		none.text = "— build a connected formation —"
+		none.add_theme_font_size_override("font_size", 12)
+		none.add_theme_color_override("font_color", Color(0.6, 0.6, 0.66))
+		_spell_list_vbox.add_child(none)
+		return
+
+	var my_turn := _turn == "player" and not _game_over
+	for entry in _spells:
+		var locked: bool = _cast_locked.has(entry["key"])
+		var b := Button.new()
+		var tint := _layer_tint_ui(entry["layer"])
+		b.text = "%s%s\n%s · %s" % [
+			entry["title"].to_upper(), ("  ✓" if locked else ""),
+			entry["layer"].to_upper(), entry["effect"]]
+		b.add_theme_font_size_override("font_size", 13)
+		b.add_theme_color_override("font_color",
+			Color(0.5, 0.5, 0.55) if locked else tint)
+		b.clip_text = false
+		b.custom_minimum_size = Vector2(248, 0)
+		b.disabled = locked or not my_turn
+		b.pressed.connect(_cast_spell.bind(entry))
+		_spell_list_vbox.add_child(b)
+
+
+func _layer_tint_ui(layer: String) -> Color:
+	if layer == "magic":  return Color(0.82, 0.55, 1.0)
+	if layer == "spirit": return Color(1.0, 0.88, 0.5)
+	return Color(0.6, 0.95, 0.6)
+
+
+func _cast_spell(entry: Dictionary) -> void:
 	if _turn != "player" or _game_over: return
-	if not _has_active_formation: return
-	var fname: String = _active_formation["name"]
+	if _cast_locked.has(entry["key"]): return
+	match entry["layer"]:
+		"earth":  _cast_earth(entry)
+		"magic":  _cast_magic(entry)
+		"spirit": _cast_spirit(entry)
+	_cast_locked[entry["key"]] = true
+	_refresh_spells()
+
+
+func _cast_earth(entry: Dictionary) -> void:
+	var fname: String = entry["name"]
 	var base_dmg: int = FORMATION_BASE_DAMAGE.get(fname, 0)
-	var mult: float   = ELEMENT_MULTIPLIER.get(_active_dominant, 1.0)
+	var mult: float   = ELEMENT_MULTIPLIER.get(entry["dom"], 1.0)
 	var shield: int   = FORMATION_SHIELD.get(fname, 0)
-	var spell_caption := _active_spell_name
+	var spell_caption: String = entry["title"]
 
 	# Power dial: weaker attack → more Essence banked toward the upper layers.
-	# Essence scales with the GEOMETRY of what you built (cups + internal links).
-	var fslots: Array = _active_formation["slots"]
+	# Essence scales with the GEOMETRY built (cups + internal links).
+	var fslots: Array = entry["slots"]
 	var links := 0
 	for conn in connections:
 		if conn["a"] in fslots and conn["b"] in fslots: links += 1
@@ -1516,11 +1693,92 @@ func _on_cast_pressed() -> void:
 	_refresh_hp_labels()
 	_refresh_essence_label()
 	_clear_player_board()
-	_clear_active_formation()
 	formation_label.text = ""
-
 	if opponent_hp <= 0:
 		_end_game(true)
+
+
+func _cast_magic(entry: Dictionary) -> void:
+	var f := { "slots": entry["slots"] }
+	var base: int = 0
+	for mf in MAGIC_FORMATIONS:
+		if mf["name"] == entry["name"]: base = int(mf["dmg"]);  break
+	var dmg := int(round(base * _layer_dominant_mult("magic", f)))
+	if dmg > 0:
+		var absorbed: int = min(opponent_shield, dmg)
+		opponent_shield -= absorbed
+		var net: int = dmg - absorbed
+		opponent_hp = max(0, opponent_hp - net)
+		_flash_damage_on_opponent(net, entry["title"])
+	if entry["name"] == "Conflux":
+		_unlock_spiritual()
+	_clear_layer_board("magic")
+	formation_label.text = ""
+	_refresh_hp_labels()
+	if opponent_hp <= 0: _end_game(true)
+
+
+func _cast_spirit(entry: Dictionary) -> void:
+	if entry["name"] == "Ascendant":
+		_flash_damage_on_opponent(opponent_hp, "ASCENDANT")
+		opponent_hp = 0
+		_refresh_hp_labels()
+		_end_game(true)
+		return
+	var f := { "slots": entry["slots"] }
+	var base: int = 0
+	for sf in SPIRIT_FORMATIONS:
+		if sf["name"] == entry["name"]: base = int(sf["dmg"]);  break
+	var dmg := int(round(base * _layer_dominant_mult("spirit", f)))
+	var absorbed: int = min(opponent_shield, dmg)
+	opponent_shield -= absorbed
+	opponent_hp = max(0, opponent_hp - (dmg - absorbed))
+	_flash_damage_on_opponent(dmg - absorbed, entry["title"])
+	_clear_layer_board("spirit")
+	formation_label.text = ""
+	_refresh_hp_labels()
+	if opponent_hp <= 0: _end_game(true)
+
+
+# ── Layer selector / dimming ──────────────────────────────────
+
+func _set_active_layer(layer: String) -> void:
+	_active_layer = layer
+	for k in _layer_tab_btns:
+		var btn: Button = _layer_tab_btns[k]
+		btn.button_pressed = (k == layer)
+	_deselect_card()
+	_apply_layer_dim()
+	_refresh_spells()
+
+
+func _set_tree_transparency(node: Node, val: float) -> void:
+	if node is GeometryInstance3D:
+		node.transparency = val
+	for child in node.get_children():
+		_set_tree_transparency(child, val)
+
+
+func _dim_roots(roots: Array, dim: bool) -> void:
+	var val := 0.66 if dim else 0.0
+	for r in roots:
+		if r != null and is_instance_valid(r):
+			_set_tree_transparency(r, val)
+
+
+func _apply_layer_dim() -> void:
+	_dim_roots(player_slots,   _active_layer != "earth")
+	_dim_roots(opponent_slots, _active_layer != "earth")
+	for conn in connections:
+		_dim_roots([conn.get("bridge")], _active_layer != "earth")
+	_dim_roots(magic_player_slots, _active_layer != "magic")
+	_dim_roots(magic_opp_slots,    _active_layer != "magic")
+	for conn in m_connections:
+		_dim_roots([conn.get("bridge")], _active_layer != "magic")
+	_dim_roots(spirit_player_slots, _active_layer != "spirit")
+	_dim_roots(spirit_opp_slots,    _active_layer != "spirit")
+	for conn in s_connections:
+		_dim_roots([conn.get("bridge")], _active_layer != "spirit")
 
 
 func _refresh_hp_labels() -> void:
@@ -1584,14 +1842,13 @@ func _set_buttons_enabled(on: bool) -> void:
 	draw_btn.disabled     = not on
 	end_turn_btn.disabled = not on
 	power_btn.disabled    = not on
-	cast_btn.disabled       = (not on) or (not _has_active_formation)
-	cast_magic_btn.disabled  = (not on) or _active_m_formation.is_empty()
-	cast_spirit_btn.disabled = (not on) or _active_s_formation.is_empty()
+	_refresh_spells()   # spell-list buttons enable/disable with the turn
 
 
 func _start_player_turn() -> void:
 	if _game_over: return
 	_turn = "player"
+	_cast_locked = {}              # each spell config castable once per turn
 	_clear_opponent_board()
 	_deal_player_hand()
 	_set_buttons_enabled(true)
@@ -1850,6 +2107,7 @@ func _on_layer_slot_input(_c, event, _p, _n, _i, layer: String, idx: int) -> voi
 	if not (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT):
 		return
 	if _turn != "player" or _game_over: return
+	if _active_layer != layer: return
 	if not _has_selection: return
 	if layer == "spirit" and not spirit_unlocked: return
 
@@ -1962,50 +2220,6 @@ func _spawn_curved_bridge(layer: String, a: int, b: int) -> void:
 	t.tween_property(bridge, "scale", Vector3.ONE, 0.35)
 
 
-func _check_layer_formation(layer: String) -> void:
-	var contents := _layer_contents(layer)
-	var conns := _layer_connections(layer)
-	var list: Array = MAGIC_FORMATIONS if layer == "magic" else SPIRIT_FORMATIONS
-	# Prefer the LARGEST completed shape — bigger geometry = bigger spell.
-	var formation: Dictionary = {}
-	var best_size := -1
-	for cand in list:
-		var cslots: Array = cand["slots"]
-		var ok := true
-		for i in cslots:
-			if contents[i] == null: ok = false; break
-		if not ok: continue
-		var clinked := false
-		for conn in conns:
-			if conn["a"] in cslots and conn["b"] in cslots: clinked = true; break
-		if not clinked: continue
-		if cslots.size() > best_size:
-			best_size = cslots.size();  formation = cand
-	if not formation.is_empty():
-		var fslots: Array = formation["slots"]
-		var counts: Dictionary = {}
-		for i in fslots:
-			var eid: String = contents[i]["id"]
-			counts[eid] = counts.get(eid, 0) + 1
-		var dom := "";  var top := 0
-		for k in counts:
-			if counts[k] > top: top = counts[k]; dom = k
-		var spell := "%s %s" % [dom.capitalize(), formation["name"]]
-		if layer == "magic":
-			_active_m_formation = formation;  _active_m_spell = spell
-			cast_magic_btn.disabled = (_turn != "player")
-			formation_label.text = "✦ MAGIC: %s — %s" % [spell.to_upper(), formation["effect"]]
-		else:
-			_active_s_formation = formation;  _active_s_spell = spell
-			cast_spirit_btn.disabled = (_turn != "player")
-			formation_label.text = "✦ SPIRIT: %s — %s" % [spell.to_upper(), formation["effect"]]
-		return
-	if layer == "magic":
-		_active_m_formation = {};  cast_magic_btn.disabled = true
-	else:
-		_active_s_formation = {};  cast_spirit_btn.disabled = true
-
-
 func _layer_dominant_mult(layer: String, formation: Dictionary) -> float:
 	var contents := _layer_contents(layer)
 	var counts: Dictionary = {}
@@ -2019,50 +2233,12 @@ func _layer_dominant_mult(layer: String, formation: Dictionary) -> float:
 	return ELEMENT_MULTIPLIER.get(dom, 1.0)
 
 
-func _on_cast_magic_pressed() -> void:
-	if _turn != "player" or _game_over or _active_m_formation.is_empty(): return
-	var f := _active_m_formation
-	var dmg := int(round(int(f["dmg"]) * _layer_dominant_mult("magic", f)))
-	if dmg > 0:
-		var absorbed: int = min(opponent_shield, dmg)
-		opponent_shield -= absorbed
-		var net: int = dmg - absorbed
-		opponent_hp = max(0, opponent_hp - net)
-		_flash_damage_on_opponent(net, _active_m_spell)
-	if f["name"] == "Conflux":
-		_unlock_spiritual()
-	_clear_layer_board("magic")
-	_active_m_formation = {};  cast_magic_btn.disabled = true
-	formation_label.text = ""
-	_refresh_hp_labels()
-	if opponent_hp <= 0: _end_game(true)
-
-
-func _on_cast_spirit_pressed() -> void:
-	if _turn != "player" or _game_over or _active_s_formation.is_empty(): return
-	var f := _active_s_formation
-	if f["name"] == "Ascendant":
-		_flash_damage_on_opponent(opponent_hp, "ASCENDANT")
-		opponent_hp = 0
-		_refresh_hp_labels()
-		_end_game(true)
-		return
-	var dmg := int(round(int(f["dmg"]) * _layer_dominant_mult("spirit", f)))
-	var absorbed: int = min(opponent_shield, dmg)
-	opponent_shield -= absorbed
-	opponent_hp = max(0, opponent_hp - (dmg - absorbed))
-	_flash_damage_on_opponent(dmg - absorbed, _active_s_spell)
-	_clear_layer_board("spirit")
-	_active_s_formation = {};  cast_spirit_btn.disabled = true
-	formation_label.text = ""
-	_refresh_hp_labels()
-	if opponent_hp <= 0: _end_game(true)
-
-
 func _unlock_spiritual() -> void:
 	spirit_unlocked = true
 	for s in spirit_player_slots: s.visible = true
 	for s in spirit_opp_slots:    s.visible = true
+	_apply_layer_dim()
+	_refresh_spells()
 	_refresh_essence_label()
 	turn_label.text = "✦ THE SPIRITUAL LAYER OPENS ✦"
 
@@ -2175,3 +2351,5 @@ func _unlock_magic_cup(i: int) -> void:
 	var t := create_tween().set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_BACK)
 	t.tween_property(root, "scale", Vector3.ONE, 0.4)
 	if turn_label: turn_label.text = "✦ MAGIC CUPS UNLOCKED ✦"
+	_apply_layer_dim()   # new cup respects the current layer view
+	_refresh_spells()
