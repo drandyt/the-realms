@@ -35,18 +35,19 @@ const CONNECTOR: Dictionary = {
 
 # ── Formation definitions ─────────────────────────────────────
 # slots: which player slot indices must ALL be filled + connected
+# Earth shapes are MUNDANE and ORTHOGONAL only (no diagonals — that is
+# Magic's domain). idx = row*COLS + col, rows 0..3, built centre-board.
 const FORMATIONS: Array[Dictionary] = [
-	{ "name": "Rampart",  "slots": [4,5,6,7],     "effect": "Block incoming damage this round" },
-	{ "name": "Volley",   "slots": [0,1,2,3],     "effect": "Strike all enemy front slots" },
-	{ "name": "Arrow",    "slots": [4,7,1,2],     "effect": "Focus strike — bonus vs unshielded" },
-	{ "name": "Wedge",    "slots": [0,3,5,6],     "effect": "Flanking — bypasses shield edge" },
-	{ "name": "Lance",    "slots": [1,5],         "effect": "Pierce — ignores shields" },
-	{ "name": "Lance",    "slots": [2,6],         "effect": "Pierce — ignores shields" },
-	{ "name": "Wings",    "slots": [0,4,3,7],     "effect": "Hit enemy outer slots" },
-	{ "name": "Crucible", "slots": [1,2,5,6],     "effect": "Double merged element power" },
-	{ "name": "Crown",    "slots": [0,3,5,6],     "effect": "Buff all connected slots next turn" },
-	{ "name": "Tide",     "slots": [4,1,6,3],     "effect": "Damage over time" },
-	{ "name": "Bastion",  "slots": [0,4,5,2,3,7], "effect": "Full shield — absorbs next attack" },
+	{ "name": "Bastion",  "slots": [28,29,30,31,40,41,42,43], "effect": "Full shield — absorbs next attack" },
+	{ "name": "Tide",     "slots": [27,28,29,30,31,32],       "effect": "Damage over time" },
+	{ "name": "Crown",    "slots": [16,17,18,19,29,41],       "effect": "Buff all connected slots next turn" },
+	{ "name": "Arrow",    "slots": [5,6,7,18,30,42],          "effect": "Focus strike — bonus vs unshielded" },
+	{ "name": "Wedge",    "slots": [16,28,40,41,42],          "effect": "Flanking — bypasses shield edge" },
+	{ "name": "Crucible", "slots": [29,30,41,42],             "effect": "Double merged element power" },
+	{ "name": "Wings",    "slots": [28,40,33,45],             "effect": "Hit enemy outer slots" },
+	{ "name": "Rampart",  "slots": [40,41,42,43],             "effect": "Block incoming damage this round" },
+	{ "name": "Volley",   "slots": [4,5,6,7],                 "effect": "Strike all enemy front slots" },
+	{ "name": "Lance",    "slots": [6,18,30,42],              "effect": "Pierce — ignores shields" },
 ]
 
 # Spell name = formation + dominant element
@@ -532,18 +533,9 @@ func _shape_grid(slots: Array) -> String:
 	return out
 
 
-func _spells_for(fname: String) -> String:
-	var out := ""
-	for key in SPELLS:
-		var parts: PackedStringArray = str(key).split("_")
-		if parts[0] == fname:
-			out += "   %s → %s\n" % [parts[1], SPELLS[key]]
-	return out
-
-
 func _build_shape_list_text() -> String:
-	var s := "SHAPES & SPELLS\n════════════════\n\n"
-	s += "EARTH\n────────\n"
+	var s := "SHAPES\n════════════════\n\n"
+	s += "EARTH  (orthogonal — mundane)\n────────\n"
 	for f in FORMATIONS:
 		var fn: String = f["name"]
 		var dmg: int = FORMATION_BASE_DAMAGE.get(fn, 0)
@@ -551,14 +543,13 @@ func _build_shape_list_text() -> String:
 		var tag := ("%d dmg" % dmg) if dmg > 0 else ("+%d shield" % shd) if shd > 0 else "—"
 		s += "%s  (%s)\n" % [fn.to_upper(), tag]
 		s += _shape_grid(f["slots"])
-		s += _spells_for(fn)
-		s += "\n"
-	s += "MAGIC\n────────\n"
+		s += "   %s\n\n" % f["effect"]
+	s += "MAGIC  (diagonals allowed)\n────────\n"
 	for mf in MAGIC_FORMATIONS:
 		s += "%s  (%d dmg)\n" % [str(mf["name"]).to_upper(), int(mf["dmg"])]
 		s += _shape_grid(mf["slots"])
 		s += "   %s\n\n" % mf["effect"]
-	s += "SPIRIT\n────────\n"
+	s += "SPIRIT  (3D — later)\n────────\n"
 	for spf in SPIRIT_FORMATIONS:
 		s += "%s  (%d dmg)\n" % [str(spf["name"]).to_upper(), int(spf["dmg"])]
 		s += _shape_grid(spf["slots"])
@@ -1150,9 +1141,10 @@ func _slot_rc(idx: int) -> Vector2i:
 
 
 func _is_adjacent(a: int, b: int) -> bool:
+	# Earth: ORTHOGONAL neighbours only — no diagonals (mundane).
 	if a == b: return false
 	var ra := _slot_rc(a);  var rb := _slot_rc(b)
-	return abs(ra.x - rb.x) <= 1 and abs(ra.y - rb.y) <= 1
+	return abs(ra.x - rb.x) + abs(ra.y - rb.y) == 1
 
 
 func _handle_connector_slot_click(idx: int) -> void:
@@ -1547,9 +1539,12 @@ func _ai_turn() -> void:
 	_clear_opponent_board()
 	await get_tree().create_timer(0.4).timeout
 
-	# Pick a target formation to build (mostly offensive)
-	var targets := [[1,2,5,6], [4,7,1,2], [0,1,2,3], [0,3,5,6], [0,4,3,7], [1,5]]
-	var target: Array = targets[randi() % targets.size()]
+	# Pick a real offensive Earth formation to build.
+	var offensive: Array = []
+	for f in FORMATIONS:
+		if FORMATION_BASE_DAMAGE.get(f["name"], 0) > 0:
+			offensive.append(f["slots"])
+	var target: Array = offensive[randi() % offensive.size()]
 
 	for i in target:
 		if opp_slot_contents[i] != null: continue
