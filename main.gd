@@ -489,19 +489,62 @@ func _setup_shape_list() -> void:
 	canvas.add_child(panel)
 
 	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	panel.add_child(scroll)
 
-	var text := Label.new()
-	text.text = _build_shape_list_text()
-	text.add_theme_font_size_override("font_size", 14)
-	text.add_theme_color_override("font_color", Color(0.92, 0.90, 0.82))
-	text.custom_minimum_size = Vector2(330, 0)
-	scroll.add_child(text)
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 7)
+	vbox.custom_minimum_size = Vector2(326, 0)
+	scroll.add_child(vbox)
+
+	_add_shape_section(vbox, "EARTH  ·  orthogonal (mundane)", FORMATIONS,
+		Color(0.55, 0.90, 0.55), true)
+	_add_shape_section(vbox, "MAGIC  ·  diagonals allowed", MAGIC_FORMATIONS,
+		Color(0.78, 0.50, 1.0), false)
+	_add_shape_section(vbox, "SPIRIT  ·  3D (later)", SPIRIT_FORMATIONS,
+		Color(1.0, 0.86, 0.45), false)
 
 
-func _shape_grid(slots: Array) -> String:
-	# Cups = "o", joined by connector lines to grid-adjacent cups:
-	#   o-o (horizontal)  |  (vertical)  \ /  (diagonal)
+func _add_shape_section(vbox: VBoxContainer, title: String, list: Array,
+		tint: Color, earth: bool) -> void:
+	var hdr := Label.new()
+	hdr.text = title
+	hdr.add_theme_font_size_override("font_size", 16)
+	hdr.add_theme_color_override("font_color", tint)
+	vbox.add_child(hdr)
+
+	for f in list:
+		var fn: String = f["name"]
+		var tag := ""
+		if earth:
+			var dmg: int = FORMATION_BASE_DAMAGE.get(fn, 0)
+			var shd: int = FORMATION_SHIELD.get(fn, 0)
+			tag = ("%d dmg" % dmg) if dmg > 0 else \
+				("+%d shield" % shd) if shd > 0 else "support"
+		else:
+			tag = "%d dmg" % int(f["dmg"])
+
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+
+		var thumb := Control.new()
+		thumb.custom_minimum_size = Vector2(112, 64)
+		var slots: Array = f["slots"]
+		thumb.draw.connect(func(): _paint_shape(thumb, slots, tint))
+		row.add_child(thumb)
+
+		var lbl := Label.new()
+		lbl.text = "%s   (%s)\n%s" % [fn.to_upper(), tag, f["effect"]]
+		lbl.add_theme_font_size_override("font_size", 13)
+		lbl.add_theme_color_override("font_color", Color(0.92, 0.90, 0.82))
+		lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		lbl.custom_minimum_size = Vector2(190, 0)
+		lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		row.add_child(lbl)
+		vbox.add_child(row)
+
+
+func _paint_shape(ctrl: Control, slots: Array, tint: Color) -> void:
 	var cells := {}
 	var minr := 99;  var maxr := -1;  var minc := 99;  var maxc := -1
 	for i in slots:
@@ -510,51 +553,32 @@ func _shape_grid(slots: Array) -> String:
 		minr = min(minr, r);  maxr = max(maxr, r)
 		minc = min(minc, c);  maxc = max(maxc, c)
 
-	var h := (maxr - minr) * 2 + 1
-	var w := (maxc - minc) * 2 + 1
-	var grid: Array = []
-	for _y in h:
-		var row: Array = []
-		for _x in w: row.append(" ")
-		grid.append(row)
+	var cols := maxc - minc
+	var rows := maxr - minr
+	var sz := ctrl.size
+	var pad := 9.0
+	var pitch := min(
+		(sz.x - 2 * pad) / max(1.0, float(cols)),
+		(sz.y - 2 * pad) / max(1.0, float(rows)))
+	pitch = clamp(pitch, 6.0, 22.0)
+	var ox := (sz.x - cols * pitch) * 0.5
+	var oy := (sz.y - rows * pitch) * 0.5
 
+	var line_col := Color(0.45, 0.82, 0.95)
+	var ring_col := tint.darkened(0.55)
+
+	var dirs := [Vector2i(0, 1), Vector2i(1, 0), Vector2i(1, 1), Vector2i(1, -1)]
 	for key in cells:
-		var r: int = key.x;  var c: int = key.y
-		var gy := (r - minr) * 2;  var gx := (c - minc) * 2
-		grid[gy][gx] = "o"
-		if cells.has(Vector2i(r, c + 1)):     grid[gy][gx + 1]   = "-"
-		if cells.has(Vector2i(r + 1, c)):     grid[gy + 1][gx]   = "|"
-		if cells.has(Vector2i(r + 1, c + 1)): grid[gy + 1][gx + 1] = "\\"
-		if cells.has(Vector2i(r + 1, c - 1)): grid[gy + 1][gx - 1] = "/"
-
-	var out := ""
-	for y in h:
-		out += "".join(grid[y]) + "\n"
-	return out
-
-
-func _build_shape_list_text() -> String:
-	var s := "SHAPES\n════════════════\n\n"
-	s += "EARTH  (orthogonal — mundane)\n────────\n"
-	for f in FORMATIONS:
-		var fn: String = f["name"]
-		var dmg: int = FORMATION_BASE_DAMAGE.get(fn, 0)
-		var shd: int = FORMATION_SHIELD.get(fn, 0)
-		var tag := ("%d dmg" % dmg) if dmg > 0 else ("+%d shield" % shd) if shd > 0 else "—"
-		s += "%s  (%s)\n" % [fn.to_upper(), tag]
-		s += _shape_grid(f["slots"])
-		s += "   %s\n\n" % f["effect"]
-	s += "MAGIC  (diagonals allowed)\n────────\n"
-	for mf in MAGIC_FORMATIONS:
-		s += "%s  (%d dmg)\n" % [str(mf["name"]).to_upper(), int(mf["dmg"])]
-		s += _shape_grid(mf["slots"])
-		s += "   %s\n\n" % mf["effect"]
-	s += "SPIRIT  (3D — later)\n────────\n"
-	for spf in SPIRIT_FORMATIONS:
-		s += "%s  (%d dmg)\n" % [str(spf["name"]).to_upper(), int(spf["dmg"])]
-		s += _shape_grid(spf["slots"])
-		s += "   %s\n\n" % spf["effect"]
-	return s
+		var p := Vector2(ox + (key.y - minc) * pitch, oy + (key.x - minr) * pitch)
+		for d in dirs:
+			var nb := Vector2i(key.x + d.x, key.y + d.y)
+			if cells.has(nb):
+				var np := Vector2(ox + (nb.y - minc) * pitch, oy + (nb.x - minr) * pitch)
+				ctrl.draw_line(p, np, line_col, 3.0, true)
+	for key in cells:
+		var p := Vector2(ox + (key.y - minc) * pitch, oy + (key.x - minr) * pitch)
+		ctrl.draw_circle(p, 6.0, ring_col)
+		ctrl.draw_circle(p, 4.2, tint)
 
 
 func _setup_layer_ui() -> void:
