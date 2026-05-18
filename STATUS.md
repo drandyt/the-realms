@@ -1,5 +1,5 @@
 # THE REALMS — PROJECT STATUS
-_Last updated: 2026-05-17 — Duty MGR full audit-and-reconcile: docs were systematically under-reporting. Milestones 1–3 confirmed COMPLETE in master by direct code read; magic/spirit layer is far beyond "foundation". STATUS rewritten to match code._
+_Last updated: 2026-05-18 — MAIN session: drag-drop/reclaim fixes, spell-list cast UI, layer tabs + dimming, persistent board. Merged to master (276059b)._
 
 ---
 
@@ -13,6 +13,18 @@ _Last updated: 2026-05-17 — Duty MGR full audit-and-reconcile: docs were syste
 ---
 
 ## Duty MGR log
+
+### 2026-05-18 — MAIN session (game code, merged to master)
+- **Commits:** `08a5954` (spell-list UI, layer tabs, drop-snap & reclaim) + `276059b` (persistent board). Fast-forwarded master `13e2690 → 276059b`, pushed to origin/master. `main.gd` only.
+- **Shipped:**
+  - Drop targeting: `_earth_slot_at` now snaps to the nearest cup — cards/connectors no longer lost in the gaps between cups. Off-grid release pings card back to hand.
+  - Reclaim: click a cup with nothing selected to pull its element **and** connectors back to hand (5-card cap), overflow recycles to deck. Lone connectors reclaimable too.
+  - Cast UI reworked: removed CAST/CAST MAGIC/CAST SPIRIT buttons; added a right-side clickable spell list scanning all layers (`_scan_formations`/`_refresh_spells`/`_cast_spell`). One cast per turn per config (`_cast_locked`, greys with ✓), entry vanishes if the formation is broken.
+  - Layer tabs (EARTH/MAGIC/SPIRIT) on the right edge; non-active layers dim to 66% transparency and are non-interactive (input gated to `_active_layer`). Magic cups still unlock via enclosure, then are fully usable.
+  - **Persistent board:** casting no longer clears cups/connectors, and the board survives turn changes. A formation is recastable each turn until you reclaim its cards to feed upper layers (the core cannibalise decision). `_clear_player_board`/`_clear_layer_board` now unused (kept for a possible future dismantle action).
+- **Verified:** headless `--editor --quit` parse clean + boot (`--quit-after`) clean, no SCRIPT ERRORs.
+- **NOT runtime-eyeballed (headless can't render):** layer dimming look, right-side tab/panel placement vs deck label & Spellbook button, Magic-cup casting once unlocked. Needs a human in-editor pass.
+- **Known asymmetry:** opponent AI still clears + rebuilds its own board each turn (AI logic depends on it). Only the player's side is persistent — making the AI play the persistent/layered game is a larger AI rework, deferred.
 
 ### 2026-05-17 — Human MGR engage + close (no game code)
 - Human MGR seat engaged, re-synced (git log + STATUS + inbox). Found STATUS already fully reconciled by the audit Duty MGR below — left it intact, no rewrite.
@@ -106,7 +118,8 @@ _None on record yet._
 
 ## Next Priorities
 _M1–M3 complete in master. Remaining work is M4 polish + verification. Priority order is the principal's call — listed here as candidate open items, not a ranking:_
-- **Runtime verification** — human plays through in-editor to confirm M3 end-screen and magic/spirit casting behave as the code implies.
+- **Runtime verification (now higher priority)** — in-editor pass on the 2026-05-18 changes: layer dimming/tab placement, right-side spell list, persistent-board feel, Magic-cup casting once unlocked; plus the older M3 end-screen / magic-spirit casting.
+- **AI parity with persistent/layered play** — opponent still rebuilds its board each turn and never uses Magic/Spirit. Larger AI rework, deferred but now the main gameplay gap.
 - **Sound effects** — none exist.
 - **Particle effects** — none exist (currently tween animation only).
 - **Hover preview** — none exists (click-select only).
