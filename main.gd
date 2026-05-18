@@ -467,7 +467,85 @@ func _setup_ui() -> void:
 
 	_setup_spellbook()
 	_setup_layer_ui()
+	_setup_shape_list()
 	_refresh_hp_labels()
+
+
+# Always-visible left panel: every shape + its spell names
+func _setup_shape_list() -> void:
+	var panel := PanelContainer.new()
+	panel.anchor_left = 0.0;  panel.anchor_right = 0.0
+	panel.anchor_top = 0.0;   panel.anchor_bottom = 1.0
+	panel.offset_left = 16.0;   panel.offset_right = 372.0
+	panel.offset_top = 160.0;   panel.offset_bottom = -132.0
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.04, 0.03, 0.07, 0.74)
+	sb.border_color = Color(0.85, 0.70, 0.30, 0.6)
+	sb.set_border_width_all(2)
+	sb.set_corner_radius_all(6)
+	sb.set_content_margin_all(10)
+	panel.add_theme_stylebox_override("panel", sb)
+	canvas.add_child(panel)
+
+	var scroll := ScrollContainer.new()
+	panel.add_child(scroll)
+
+	var text := Label.new()
+	text.text = _build_shape_list_text()
+	text.add_theme_font_size_override("font_size", 14)
+	text.add_theme_color_override("font_color", Color(0.92, 0.90, 0.82))
+	text.custom_minimum_size = Vector2(330, 0)
+	scroll.add_child(text)
+
+
+func _shape_grid(slots: Array) -> String:
+	var cells := {}
+	var minr := 99;  var maxr := -1;  var minc := 99;  var maxc := -1
+	for i in slots:
+		var r: int = i / COLS;  var c: int = i % COLS
+		cells[Vector2i(r, c)] = true
+		minr = min(minr, r);  maxr = max(maxr, r)
+		minc = min(minc, c);  maxc = max(maxc, c)
+	var out := ""
+	for r in range(minr, maxr + 1):
+		for c in range(minc, maxc + 1):
+			out += "■" if cells.has(Vector2i(r, c)) else "·"
+		out += "\n"
+	return out
+
+
+func _spells_for(fname: String) -> String:
+	var out := ""
+	for key in SPELLS:
+		var parts: PackedStringArray = str(key).split("_")
+		if parts[0] == fname:
+			out += "   %s → %s\n" % [parts[1], SPELLS[key]]
+	return out
+
+
+func _build_shape_list_text() -> String:
+	var s := "SHAPES & SPELLS\n════════════════\n\n"
+	s += "EARTH\n────────\n"
+	for f in FORMATIONS:
+		var fn: String = f["name"]
+		var dmg: int = FORMATION_BASE_DAMAGE.get(fn, 0)
+		var shd: int = FORMATION_SHIELD.get(fn, 0)
+		var tag := ("%d dmg" % dmg) if dmg > 0 else ("+%d shield" % shd) if shd > 0 else "—"
+		s += "%s  (%s)\n" % [fn.to_upper(), tag]
+		s += _shape_grid(f["slots"])
+		s += _spells_for(fn)
+		s += "\n"
+	s += "MAGIC\n────────\n"
+	for mf in MAGIC_FORMATIONS:
+		s += "%s  (%d dmg)\n" % [str(mf["name"]).to_upper(), int(mf["dmg"])]
+		s += _shape_grid(mf["slots"])
+		s += "   %s\n\n" % mf["effect"]
+	s += "SPIRIT\n────────\n"
+	for spf in SPIRIT_FORMATIONS:
+		s += "%s  (%d dmg)\n" % [str(spf["name"]).to_upper(), int(spf["dmg"])]
+		s += _shape_grid(spf["slots"])
+		s += "   %s\n\n" % spf["effect"]
+	return s
 
 
 func _setup_layer_ui() -> void:
