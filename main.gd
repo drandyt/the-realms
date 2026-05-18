@@ -1,16 +1,16 @@
 extends Node3D
 
 # ── Layout ────────────────────────────────────────────────────
-const COLS        = 4
-const ROWS        = 2
-const SLOT_GAP_X  = 0.80
-const SLOT_GAP_Z  = 0.90
-const SLOT_NEAR_Z = 0.55
+const COLS        = 12
+const ROWS        = 4
+const SLOT_GAP_X  = 0.58
+const SLOT_GAP_Z  = 0.62
+const SLOT_NEAR_Z = 0.50
 
-const HAND_COUNT   = 3
-const HAND_Z       = 2.80
-const HAND_SPACING = 0.72
-const DECK_X       = 2.9
+const HAND_COUNT   = 5
+const HAND_Z       = 3.55
+const HAND_SPACING = 0.74
+const DECK_X       = 4.3
 
 const CARD_W = 0.54
 const CARD_H = 0.026
@@ -145,6 +145,11 @@ var player_essence   := 0
 var opponent_essence := 0
 var spirit_unlocked  := false
 
+# Magic cups are unlocked (permanently) by enclosing Earth areas with
+# connectors. magic_unlocked[i] == earth cup i has its magic cup above it.
+var magic_unlocked: Array = []
+var connector_graph: Dictionary = {}   # earth idx -> Array[int] neighbour idxs
+
 # Cast power dial: 0 Full (100% dmg, 0 build) · 1 Half (50% dmg, +build) · 2 Channel (0 dmg, ++build)
 var cast_power := 0
 const POWER_NAMES := ["FULL POWER", "HALF / BUILD", "CHANNEL ALL"]
@@ -190,17 +195,21 @@ func _ready() -> void:
 	_build_deck(opponent_deck)
 	_deal_opponent_hand()
 
-	_setup_layer_slots(1,  magic_player_slots,  MAGIC_Y,  Color(0.55,0.25,0.85), true)
-	_setup_layer_slots(-1, magic_opp_slots,    MAGIC_Y,  Color(0.55,0.25,0.85), false)
-	_setup_layer_slots(1,  spirit_player_slots, SPIRIT_Y, Color(1.0,0.92,0.55), true, true)
-	_setup_layer_slots(-1, spirit_opp_slots,    SPIRIT_Y, Color(1.0,0.92,0.55), false, true)
+	# Magic / Spiritual cups do NOT exist at start — they are unlocked
+	# permanently when you enclose an area with connectors on Earth.
+	var n := player_slots.size()
+	magic_player_slots.resize(n);  magic_player_slots.fill(null)
+	magic_opp_slots.resize(n);     magic_opp_slots.fill(null)
+	spirit_player_slots.resize(n); spirit_player_slots.fill(null)
+	spirit_opp_slots.resize(n);    spirit_opp_slots.fill(null)
+	magic_unlocked.resize(n);      magic_unlocked.fill(false)
 
-	slot_contents.resize(player_slots.size());   slot_contents.fill(null)
-	slot_plasma_mat.resize(player_slots.size());  slot_plasma_mat.fill(null)
-	slot_plasma_color.resize(player_slots.size()); slot_plasma_color.fill(null)
+	slot_contents.resize(n);   slot_contents.fill(null)
+	slot_plasma_mat.resize(n);  slot_plasma_mat.fill(null)
+	slot_plasma_color.resize(n); slot_plasma_color.fill(null)
 	opp_slot_contents.resize(opponent_slots.size()); opp_slot_contents.fill(null)
-	m_slot_contents.resize(8); m_slot_contents.fill(null)
-	s_slot_contents.resize(8); s_slot_contents.fill(null)
+	m_slot_contents.resize(n); m_slot_contents.fill(null)
+	s_slot_contents.resize(n); s_slot_contents.fill(null)
 
 	_start_player_turn()
 
@@ -228,17 +237,17 @@ func _setup_environment() -> void:
 
 func _make_camera() -> Camera3D:
 	var cam := Camera3D.new()
-	cam.position = Vector3(0.0, 9.5, 7.0)
-	cam.rotation_degrees = Vector3(-56.0, 0.0, 0.0)
-	cam.fov = 60.0;  add_child(cam);  return cam
+	cam.position = Vector3(0.0, 13.6, 9.2)
+	cam.rotation_degrees = Vector3(-57.0, 0.0, 0.0)
+	cam.fov = 62.0;  add_child(cam);  return cam
 
 
 # ── Table ─────────────────────────────────────────────────────
 
 func _setup_table() -> void:
-	_table_box(Vector3(6.8, 0.12, 7.8), Vector3(0,-0.06,0), Color(0.10,0.20,0.12), 0.95, 0.0)
-	_table_box(Vector3(7.0, 0.06, 8.0), Vector3(0,-0.15,0), Color(0.18,0.10,0.04), 0.65, 0.1)
-	_table_box(Vector3(6.6, 0.008, 0.04), Vector3(0,0.004,0), Color(0.22,0.35,0.24), 0.9, 0.0)
+	_table_box(Vector3(8.6, 0.12, 9.6), Vector3(0,-0.06,0), Color(0.10,0.20,0.12), 0.95, 0.0)
+	_table_box(Vector3(8.9, 0.06, 9.9), Vector3(0,-0.15,0), Color(0.18,0.10,0.04), 0.65, 0.1)
+	_table_box(Vector3(8.4, 0.008, 0.04), Vector3(0,0.004,0), Color(0.22,0.35,0.24), 0.9, 0.0)
 
 
 func _table_box(sz: Vector3, pos: Vector3, col: Color, rough: float, metal: float) -> void:
@@ -365,76 +374,95 @@ func _setup_hand_zone(side: int) -> void:
 func _setup_ui() -> void:
 	canvas = CanvasLayer.new();  add_child(canvas)
 
-	draw_btn = Button.new()
-	draw_btn.text = "Draw Hand";  draw_btn.custom_minimum_size = Vector2(130, 48)
-	draw_btn.anchor_left = 1.0;  draw_btn.anchor_right  = 1.0
-	draw_btn.anchor_top  = 1.0;  draw_btn.anchor_bottom = 1.0
-	draw_btn.offset_left = -150.0;  draw_btn.offset_right  = -20.0
-	draw_btn.offset_top  = -70.0;   draw_btn.offset_bottom = -22.0
-	draw_btn.pressed.connect(_on_draw_pressed);  canvas.add_child(draw_btn)
+	# ── Decorative bottom action bar ──────────────────────────
+	var bar := ColorRect.new()
+	bar.color = Color(0.04, 0.03, 0.07, 0.78)
+	bar.anchor_left = 0.0;  bar.anchor_right = 1.0
+	bar.anchor_top = 1.0;   bar.anchor_bottom = 1.0
+	bar.offset_top = -118.0;  bar.offset_bottom = 0.0
+	bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	canvas.add_child(bar)
 
-	end_turn_btn = Button.new()
-	end_turn_btn.text = "End Turn";  end_turn_btn.custom_minimum_size = Vector2(130, 48)
-	end_turn_btn.anchor_left = 1.0;  end_turn_btn.anchor_right  = 1.0
-	end_turn_btn.anchor_top  = 1.0;  end_turn_btn.anchor_bottom = 1.0
-	end_turn_btn.offset_left = -150.0;  end_turn_btn.offset_right  = -20.0
-	end_turn_btn.offset_top  = -128.0;  end_turn_btn.offset_bottom = -80.0
-	end_turn_btn.pressed.connect(_on_end_turn_pressed);  canvas.add_child(end_turn_btn)
+	var trim := ColorRect.new()
+	trim.color = Color(0.85, 0.70, 0.30, 0.55)
+	trim.anchor_left = 0.0;  trim.anchor_right = 1.0
+	trim.anchor_top = 1.0;   trim.anchor_bottom = 1.0
+	trim.offset_top = -120.0;  trim.offset_bottom = -116.0
+	trim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	canvas.add_child(trim)
 
+	# Six evenly-spaced action buttons in one row inside the bar
+	var labels := ["Draw Hand", "End Turn", "Cast Power: FULL", "CAST", "CAST MAGIC", "CAST SPIRIT"]
+	var btns: Array[Button] = []
+	var step := 166.0
+	var start := -((6 - 1) * step + 150.0) / 2.0
+	for i in 6:
+		var b := Button.new()
+		b.text = labels[i]
+		b.add_theme_font_size_override("font_size", 19)
+		b.anchor_left = 0.5;  b.anchor_right = 0.5
+		b.anchor_top = 1.0;   b.anchor_bottom = 1.0
+		b.offset_left = start + i * step
+		b.offset_right = b.offset_left + 150.0
+		b.offset_top = -90.0;  b.offset_bottom = -34.0
+		canvas.add_child(b);  btns.append(b)
+	draw_btn       = btns[0];  draw_btn.pressed.connect(_on_draw_pressed)
+	end_turn_btn   = btns[1];  end_turn_btn.pressed.connect(_on_end_turn_pressed)
+	power_btn      = btns[2];  power_btn.pressed.connect(_on_power_pressed)
+	cast_btn       = btns[3];  cast_btn.pressed.connect(_on_cast_pressed)
+	cast_magic_btn = btns[4];  cast_magic_btn.pressed.connect(_on_cast_magic_pressed)
+	cast_spirit_btn= btns[5];  cast_spirit_btn.pressed.connect(_on_cast_spirit_pressed)
+	cast_btn.disabled = true
+	cast_magic_btn.disabled = true
+	cast_spirit_btn.disabled = true
+
+	# Big decorative spell / formation banner above the bar
+	formation_label = Label.new()
+	formation_label.anchor_left = 0.5;  formation_label.anchor_right = 0.5
+	formation_label.anchor_top  = 1.0;  formation_label.anchor_bottom = 1.0
+	formation_label.offset_left = -460.0;  formation_label.offset_right = 460.0
+	formation_label.offset_top  = -182.0;  formation_label.offset_bottom = -124.0
+	formation_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	formation_label.vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
+	formation_label.add_theme_font_size_override("font_size", 30)
+	formation_label.add_theme_color_override("font_color", Color(1.0, 0.88, 0.45))
+	canvas.add_child(formation_label)
+
+	# Turn banner — top centre, large
 	turn_label = Label.new()
 	turn_label.anchor_left = 0.5;  turn_label.anchor_right = 0.5
 	turn_label.anchor_top  = 0.0;  turn_label.anchor_bottom = 0.0
-	turn_label.offset_left = -200.0;  turn_label.offset_right = 200.0
-	turn_label.offset_top  = 16.0;    turn_label.offset_bottom = 56.0
+	turn_label.offset_left = -380.0;  turn_label.offset_right = 380.0
+	turn_label.offset_top  = 14.0;    turn_label.offset_bottom = 64.0
 	turn_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	turn_label.add_theme_font_size_override("font_size", 26)
+	turn_label.add_theme_font_size_override("font_size", 34)
+	turn_label.add_theme_color_override("font_color", Color(0.95, 0.95, 1.0))
 	canvas.add_child(turn_label)
 
 	deck_label = Label.new()
-	deck_label.anchor_left = 1.0;  deck_label.anchor_right  = 1.0
-	deck_label.anchor_top  = 1.0;  deck_label.anchor_bottom = 1.0
-	deck_label.offset_left = -150.0;  deck_label.offset_right  = -20.0
-	deck_label.offset_top  = -100.0;  deck_label.offset_bottom = -72.0
-	deck_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	deck_label.anchor_left = 1.0;  deck_label.anchor_right = 1.0
+	deck_label.offset_left = -210.0;  deck_label.offset_right = -20.0
+	deck_label.offset_top  = 66.0;    deck_label.offset_bottom = 96.0
+	deck_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	deck_label.add_theme_font_size_override("font_size", 20)
 	canvas.add_child(deck_label)
 
-	# Formation display — centre bottom
-	formation_label = Label.new()
-	formation_label.anchor_left   = 0.5;  formation_label.anchor_right  = 0.5
-	formation_label.anchor_top    = 1.0;  formation_label.anchor_bottom = 1.0
-	formation_label.offset_left   = -260.0;  formation_label.offset_right  = 260.0
-	formation_label.offset_top    = -130.0;  formation_label.offset_bottom = -70.0
-	formation_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	formation_label.vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
-	formation_label.add_theme_font_size_override("font_size", 20)
-	canvas.add_child(formation_label)
-
-	# Cast button (centre bottom, below formation label)
-	cast_btn = Button.new()
-	cast_btn.text = "CAST"
-	cast_btn.custom_minimum_size = Vector2(180, 54)
-	cast_btn.anchor_left = 0.5;  cast_btn.anchor_right  = 0.5
-	cast_btn.anchor_top  = 1.0;  cast_btn.anchor_bottom = 1.0
-	cast_btn.offset_left = -90.0;  cast_btn.offset_right  = 90.0
-	cast_btn.offset_top  = -64.0;  cast_btn.offset_bottom = -10.0
-	cast_btn.disabled = true
-	cast_btn.pressed.connect(_on_cast_pressed)
-	canvas.add_child(cast_btn)
-
-	# HP labels
+	# HP — big and colour-coded
 	hp_opp_label = Label.new()
 	hp_opp_label.anchor_left = 0.0;  hp_opp_label.anchor_top = 0.0
-	hp_opp_label.offset_left = 20.0; hp_opp_label.offset_top = 18.0
-	hp_opp_label.offset_right = 260.0; hp_opp_label.offset_bottom = 60.0
-	hp_opp_label.add_theme_font_size_override("font_size", 22)
+	hp_opp_label.offset_left = 26.0; hp_opp_label.offset_top = 16.0
+	hp_opp_label.offset_right = 480.0; hp_opp_label.offset_bottom = 58.0
+	hp_opp_label.add_theme_font_size_override("font_size", 30)
+	hp_opp_label.add_theme_color_override("font_color", Color(1.0, 0.45, 0.45))
 	canvas.add_child(hp_opp_label)
 
 	hp_player_label = Label.new()
-	hp_player_label.anchor_left = 0.0;  hp_player_label.anchor_top    = 1.0
+	hp_player_label.anchor_left = 0.0;  hp_player_label.anchor_top = 1.0
 	hp_player_label.anchor_bottom = 1.0
-	hp_player_label.offset_left = 20.0; hp_player_label.offset_top    = -54.0
-	hp_player_label.offset_right = 260.0; hp_player_label.offset_bottom = -18.0
-	hp_player_label.add_theme_font_size_override("font_size", 22)
+	hp_player_label.offset_left = 26.0;  hp_player_label.offset_right = 480.0
+	hp_player_label.offset_top  = -180.0;  hp_player_label.offset_bottom = -138.0
+	hp_player_label.add_theme_font_size_override("font_size", 30)
+	hp_player_label.add_theme_color_override("font_color", Color(0.55, 0.95, 0.65))
 	canvas.add_child(hp_player_label)
 
 	_setup_spellbook()
@@ -445,50 +473,19 @@ func _setup_ui() -> void:
 func _setup_layer_ui() -> void:
 	essence_label = Label.new()
 	essence_label.anchor_left = 0.0;  essence_label.anchor_top = 0.0
-	essence_label.offset_left = 20.0; essence_label.offset_top = 64.0
-	essence_label.offset_right = 320.0; essence_label.offset_bottom = 92.0
-	essence_label.add_theme_font_size_override("font_size", 18)
-	essence_label.add_theme_color_override("font_color", Color(0.8, 0.6, 1.0))
+	essence_label.offset_left = 26.0; essence_label.offset_top = 96.0
+	essence_label.offset_right = 520.0; essence_label.offset_bottom = 124.0
+	essence_label.add_theme_font_size_override("font_size", 21)
+	essence_label.add_theme_color_override("font_color", Color(0.78, 0.55, 1.0))
 	canvas.add_child(essence_label)
 
 	spirit_label = Label.new()
 	spirit_label.anchor_left = 0.0;  spirit_label.anchor_top = 0.0
-	spirit_label.offset_left = 20.0; spirit_label.offset_top = 92.0
-	spirit_label.offset_right = 360.0; spirit_label.offset_bottom = 118.0
-	spirit_label.add_theme_font_size_override("font_size", 16)
-	spirit_label.add_theme_color_override("font_color", Color(1.0, 0.92, 0.55))
+	spirit_label.offset_left = 26.0; spirit_label.offset_top = 126.0
+	spirit_label.offset_right = 560.0; spirit_label.offset_bottom = 152.0
+	spirit_label.add_theme_font_size_override("font_size", 18)
+	spirit_label.add_theme_color_override("font_color", Color(1.0, 0.90, 0.55))
 	canvas.add_child(spirit_label)
-
-	power_btn = Button.new()
-	power_btn.custom_minimum_size = Vector2(160, 40)
-	power_btn.anchor_left = 0.5;  power_btn.anchor_right = 0.5
-	power_btn.anchor_top  = 1.0;  power_btn.anchor_bottom = 1.0
-	power_btn.offset_left = -80.0;  power_btn.offset_right = 80.0
-	power_btn.offset_top  = -118.0; power_btn.offset_bottom = -78.0
-	power_btn.pressed.connect(_on_power_pressed)
-	canvas.add_child(power_btn)
-
-	cast_magic_btn = Button.new()
-	cast_magic_btn.text = "CAST MAGIC"
-	cast_magic_btn.custom_minimum_size = Vector2(150, 48)
-	cast_magic_btn.anchor_left = 0.5;  cast_magic_btn.anchor_right = 0.5
-	cast_magic_btn.anchor_top  = 1.0;  cast_magic_btn.anchor_bottom = 1.0
-	cast_magic_btn.offset_left = -250.0;  cast_magic_btn.offset_right = -100.0
-	cast_magic_btn.offset_top  = -64.0;   cast_magic_btn.offset_bottom = -16.0
-	cast_magic_btn.disabled = true
-	cast_magic_btn.pressed.connect(_on_cast_magic_pressed)
-	canvas.add_child(cast_magic_btn)
-
-	cast_spirit_btn = Button.new()
-	cast_spirit_btn.text = "CAST SPIRIT"
-	cast_spirit_btn.custom_minimum_size = Vector2(150, 48)
-	cast_spirit_btn.anchor_left = 0.5;  cast_spirit_btn.anchor_right = 0.5
-	cast_spirit_btn.anchor_top  = 1.0;  cast_spirit_btn.anchor_bottom = 1.0
-	cast_spirit_btn.offset_left = 100.0;  cast_spirit_btn.offset_right = 250.0
-	cast_spirit_btn.offset_top  = -64.0;  cast_spirit_btn.offset_bottom = -16.0
-	cast_spirit_btn.disabled = true
-	cast_spirit_btn.pressed.connect(_on_cast_spirit_pressed)
-	canvas.add_child(cast_spirit_btn)
 
 	_refresh_essence_label()
 	_update_power_btn()
@@ -564,19 +561,25 @@ func _build_book_text() -> String:
 	var s := "THE REALMS — SPELLBOOK\n"
 	s += "════════════════════════\n\n"
 	s += "HOW TO PLAY\n"
-	s += "• Click an element card, then click one of your\n"
-	s += "  silver cups to place it.\n"
-	s += "• Play a CONNECTOR card, then click two adjacent\n"
-	s += "  cups to link them.\n"
-	s += "• Fill + connect all cups of a formation to arm it,\n"
-	s += "  then press CAST.\n"
-	s += "• Press End Turn to let the opponent act.\n"
+	s += "• %d-wide x %d-deep Earth board per side.\n" % [COLS, ROWS]
+	s += "• Click an element card, then a silver cup.\n"
+	s += "• Play a CONNECTOR, then two adjacent cups.\n"
+	s += "• Fill + connect a formation to arm it, CAST.\n"
+	s += "• Click a filled cup with NO card selected to\n"
+	s += "  pull it back to hand (if you have space).\n"
+	s += "• Draw Hand = shuffle hand back, draw %d fresh.\n" % HAND_COUNT
+	s += "• Deck: 25 element (earth/air/water/fire) +\n"
+	s += "  25 connectors, a finite reshuffled pool.\n"
 	s += "• Start LIFE: %d each.\n\n" % START_LIFE
 	s += "THE THREE LAYERS\n"
 	s += "────────────────────────\n"
 	s += "EARTH (table): attack/defence formations.\n"
-	s += "MAGIC (mid, purple): costs %d Essence/cup.\n" % MAGIC_COST
-	s += "  Connectors CURVE — link ANY two cups.\n"
+	s += "MAGIC (mid, purple): NO cups at start.\n"
+	s += "  Enclose an area with connectors on Earth\n"
+	s += "  and the whole block (border + inside) of\n"
+	s += "  magic cups appears above — PERMANENTLY.\n"
+	s += "  Magic connectors CURVE: link ANY 2 cups.\n"
+	s += "  (Placing still costs %d Essence/cup.)\n" % MAGIC_COST
 	s += "SPIRIT (top, gold): costs %d Essence/cup.\n" % SPIRIT_COST
 	s += "  Sealed until you form CONFLUX on Magic.\n\n"
 	s += "ESSENCE — feeding the climb\n"
@@ -631,8 +634,10 @@ func _build_book_text() -> String:
 func _build_deck(target: Array[Dictionary]) -> void:
 	var rng := RandomNumberGenerator.new();  rng.randomize()
 	target.clear()
-	for _i in ELEMENT_POOL: target.append(ELEMENTS[rng.randi() % ELEMENTS.size()])
-	for _i in 10:  target.append(CONNECTOR)
+	# Deck = 25 elements (earth/air/water/fire only) + 25 connectors.
+	var pool: Array = ELEMENTS.slice(0, 4)   # earth, air, water, fire
+	for _i in 25: target.append(pool[rng.randi() % pool.size()])
+	for _i in 25: target.append(CONNECTOR)
 	_shuffle_deck(target)
 
 
@@ -699,11 +704,65 @@ func _on_slot_input(_cam2, event, _pos, _normal, _idx, slot_idx: int) -> void:
 	if not (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT):
 		return
 	if _turn != "player" or _game_over: return
-	if not _has_selection: return
+	if not _has_selection:
+		_take_back_from_slot(slot_idx)
+		return
 	if _selected_card_data.get("type") == "connector":
 		_handle_connector_slot_click(slot_idx)
 	else:
 		_play_to_slot(slot_idx)
+
+
+# Click a filled cup with an empty-ish hand to pull the element back.
+func _take_back_from_slot(idx: int) -> void:
+	if slot_contents[idx] == null: return
+	if player_hand.size() >= HAND_COUNT:
+		formation_label.text = "Hand is full — play or draw before reclaiming"
+		return
+	var data: Dictionary = slot_contents[idx]
+	# Detach any connectors touching this cup; recycle them to the deck.
+	var kept: Array = []
+	for conn in connections:
+		if conn["a"] == idx or conn["b"] == idx:
+			var b = conn.get("bridge")
+			if b != null and is_instance_valid(b): b.queue_free()
+			_return_to_deck(CONNECTOR)
+		else:
+			kept.append(conn)
+	connections = kept
+	_rebuild_connector_graph()
+	_free_plasma_in(player_slots[idx])
+	slot_contents[idx]     = null
+	slot_plasma_mat[idx]   = null
+	slot_plasma_color[idx] = null
+	_add_card_to_hand(data)
+	_check_formations()
+
+
+func _rebuild_connector_graph() -> void:
+	connector_graph.clear()
+	for conn in connections:
+		var a: int = conn["a"];  var b: int = conn["b"]
+		if not connector_graph.has(a): connector_graph[a] = []
+		if not connector_graph.has(b): connector_graph[b] = []
+		if b not in connector_graph[a]: connector_graph[a].append(b)
+		if a not in connector_graph[b]: connector_graph[b].append(a)
+
+
+func _add_card_to_hand(data: Dictionary) -> void:
+	var card := _make_card(data)
+	card.set_meta("data", data)
+	_add_card_area(card, data)
+	add_child(card);  player_hand.append(card)
+	_layout_hand()
+
+
+func _layout_hand() -> void:
+	var start_x := -(player_hand.size() - 1) * HAND_SPACING / 2.0
+	for i in player_hand.size():
+		var c: Node3D = player_hand[i]
+		if is_instance_valid(c):
+			c.position = Vector3(start_x + i * HAND_SPACING, 0.025, HAND_Z)
 
 
 # ── Selection ─────────────────────────────────────────────────
@@ -1070,6 +1129,7 @@ func _draw_connection(idx_a: int, idx_b: int) -> void:
 	add_child(bridge);  bridge.add_child(trough);  bridge.add_child(stream)
 
 	connections.append({"a": idx_a, "b": idx_b, "stream_mat": smat, "bridge": bridge})
+	_register_connector_edge(idx_a, idx_b)
 
 	bridge.scale = Vector3(1.0, 0.0, 1.0)
 	var t := create_tween().set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_BACK)
@@ -1310,6 +1370,7 @@ func _clear_player_board() -> void:
 		slot_plasma_mat[i]    = null
 		slot_plasma_color[i]  = null
 	connections.clear()
+	connector_graph.clear()   # magic_unlocked persists — unlocks are permanent
 
 
 # ── Turn flow ─────────────────────────────────────────────────
@@ -1816,3 +1877,92 @@ func _clear_layer_board(layer: String) -> void:
 
 func _flash_essence_warn() -> void:
 	formation_label.text = "Not enough ✦ Essence — cast Earth spells (Half/Channel) to bank it"
+
+
+# ── Enclosure → Magic-cup unlock ──────────────────────────────
+
+func _grid_xy(i: int) -> Vector2:
+	return Vector2(i % COLS, i / COLS)
+
+
+func _register_connector_edge(a: int, b: int) -> void:
+	if not connector_graph.has(a): connector_graph[a] = []
+	if not connector_graph.has(b): connector_graph[b] = []
+	if b not in connector_graph[a]: connector_graph[a].append(b)
+	if a not in connector_graph[b]: connector_graph[b].append(a)
+	# A new edge that joins two already-connected cups closes a loop.
+	var cycle := _find_cycle_path(a, b)
+	if cycle.size() >= 3:
+		_unlock_enclosed(cycle)
+
+
+func _find_cycle_path(a: int, b: int) -> Array:
+	# BFS shortest path a→b that does NOT use the direct (a,b) edge.
+	var prev: Dictionary = {a: -1}
+	var queue: Array = [a]
+	while not queue.is_empty():
+		var u: int = queue.pop_front()
+		for v in connector_graph.get(u, []):
+			if (u == a and v == b) or (u == b and v == a): continue
+			if prev.has(v): continue
+			prev[v] = u
+			if v == b:
+				var path: Array = []
+				var c := b
+				while c != -1:
+					path.append(c);  c = prev[c]
+				return path
+			queue.append(v)
+	return []
+
+
+func _unlock_enclosed(cycle: Array) -> void:
+	var poly: Array = []
+	for idx in cycle: poly.append(_grid_xy(idx))
+	for j in player_slots.size():
+		if magic_unlocked[j]: continue
+		if j in cycle or _point_in_poly(_grid_xy(j), poly):
+			_unlock_magic_cup(j)
+
+
+func _point_in_poly(p: Vector2, poly: Array) -> bool:
+	var inside := false
+	var n := poly.size()
+	var k := n - 1
+	for i in n:
+		var pi: Vector2 = poly[i]
+		var pk: Vector2 = poly[k]
+		if ((pi.y > p.y) != (pk.y > p.y)) and \
+		   (p.x < (pk.x - pi.x) * (p.y - pi.y) / (pk.y - pi.y) + pi.x):
+			inside = not inside
+		k = i
+	return inside
+
+
+func _unlock_magic_cup(i: int) -> void:
+	if magic_unlocked[i]: return
+	magic_unlocked[i] = true
+
+	var tint := Color(0.6, 0.3, 0.95)
+	var root := Node3D.new()
+	root.position = player_slots[i].position;  root.position.y = MAGIC_Y
+	add_child(root);  magic_player_slots[i] = root
+	_build_crystal_cup(root, tint)
+	var area := Area3D.new()
+	var shape := CollisionShape3D.new()
+	var cyl := CylinderShape3D.new();  cyl.radius = 0.26;  cyl.height = 0.40
+	shape.shape = cyl;  shape.position.y = 0.10
+	area.add_child(shape)
+	area.input_event.connect(_on_layer_slot_input.bind("magic", i))
+	root.add_child(area)
+
+	var oroot := Node3D.new()
+	oroot.position = opponent_slots[i].position;  oroot.position.y = MAGIC_Y
+	oroot.rotation_degrees.y = 180.0
+	add_child(oroot);  magic_opp_slots[i] = oroot
+	_build_crystal_cup(oroot, tint)
+
+	root.scale = Vector3.ZERO
+	var t := create_tween().set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_BACK)
+	t.tween_property(root, "scale", Vector3.ONE, 0.4)
+	if turn_label: turn_label.text = "✦ MAGIC CUPS UNLOCKED ✦"
