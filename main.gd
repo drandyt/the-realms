@@ -99,6 +99,12 @@ var _has_selection      := false
 var _connector_slot1    := -1
 var _slot_highlights: Array[Node3D] = []
 
+# Drag & drop
+var _dragging      := false
+var _maybe_drag    := false
+var _press_pos     := Vector2.ZERO
+var _hover_ring: MeshInstance3D = null
+
 var _active_formation_highlights: Array[Node3D] = []
 var _active_formation: Dictionary = {}   # currently castable formation
 var _active_dominant: String      = ""
@@ -283,6 +289,7 @@ func _add_slot_area(slot_root: Node3D, idx: int) -> void:
 	var cyl := CylinderShape3D.new();  cyl.radius = 0.32;  cyl.height = 0.45
 	shape.shape = cyl;  shape.position.y = 0.12
 	area.add_child(shape)
+	area.set_meta("layer", "earth");  area.set_meta("idx", idx)
 	area.input_event.connect(_on_slot_input.bind(idx))
 	slot_root.add_child(area)
 
@@ -808,7 +815,92 @@ func _add_card_area(card: Node3D, data: Dictionary) -> void:
 func _on_card_input(_cam2, event, _pos, _normal, _idx, card: Node3D, data: Dictionary) -> void:
 	if _turn != "player" or _game_over: return
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-		_select_card(card, data)
+		_select_card(card, data)          # click-flow still works as fallback
+		_maybe_drag = true
+		_press_pos  = event.position
+
+
+const _DRAG_THRESHOLD := 8.0
+
+func _input(event: InputEvent) -> void:
+	if _turn != "player" or _game_over: return
+	if not _has_selection: return
+
+	if event is InputEventMouseMotion:
+		if _maybe_drag and (event.button_mask & MOUSE_BUTTON_MASK_LEFT) \
+				and _press_pos.distance_to(event.position) > _DRAG_THRESHOLD:
+			_dragging = true
+		var w = _world_on_board(event.position)
+		if w != null:
+			var idx := _earth_slot_at(w)
+			if _dragging and is_instance_valid(_selected_card_node):
+				_selected_card_node.position = Vector3(w.x, 0.34, w.z)
+			_update_hover(idx)
+
+	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT \
+			and not event.pressed:
+		if _dragging:
+			var w = _world_on_board(event.position)
+			var idx := _earth_slot_at(w) if w != null else -1
+			_dragging = false;  _maybe_drag = false
+			_clear_hover()
+			if idx >= 0:
+				if _selected_card_data.get("type") == "connector":
+					_handle_connector_slot_click(idx)
+				else:
+					_play_to_slot(idx)
+			else:
+				_deselect_card();  _layout_hand()
+		else:
+			_maybe_drag = false   # was a plain click — keep click-flow selection
+
+
+func _world_on_board(mpos: Vector2):
+	if _cam == null: return null
+	var o := _cam.project_ray_origin(mpos)
+	var d := _cam.project_ray_normal(mpos)
+	var plane := Plane(Vector3.UP, 0.02)
+	return plane.intersects_ray(o, d)
+
+
+func _earth_slot_at(world) -> int:
+	if world == null: return -1
+	var start_x := -(COLS - 1) * SLOT_GAP_X / 2.0
+	var col := int(round((world.x - start_x) / SLOT_GAP_X))
+	var row := int(round((world.z - SLOT_NEAR_Z) / SLOT_GAP_Z))
+	if col < 0 or col >= COLS or row < 0 or row >= ROWS: return -1
+	var sx := start_x + col * SLOT_GAP_X
+	var sz := SLOT_NEAR_Z + row * SLOT_GAP_Z
+	if Vector2(world.x - sx, world.z - sz).length() > 0.40: return -1
+	return row * COLS + col
+
+
+func _update_hover(idx: int) -> void:
+	if idx < 0:
+		_clear_hover();  return
+	if _hover_ring == null:
+		_hover_ring = MeshInstance3D.new()
+		var rm := CylinderMesh.new()
+		rm.top_radius = 0.36;  rm.bottom_radius = 0.36
+		rm.height = 0.012;  rm.radial_segments = 32
+		_hover_ring.mesh = rm
+		add_child(_hover_ring)
+	var start_x := -(COLS - 1) * SLOT_GAP_X / 2.0
+	var col := idx % COLS;  var row := idx / COLS
+	_hover_ring.position = Vector3(
+		start_x + col * SLOT_GAP_X, 0.02, SLOT_NEAR_Z + row * SLOT_GAP_Z)
+	var occupied: bool = slot_contents[idx] != null
+	var col2 := Color(1.0, 0.78, 0.2) if occupied else Color(0.30, 0.85, 0.95)
+	var m := StandardMaterial3D.new()
+	m.albedo_color = col2;  m.emission_enabled = true
+	m.emission = col2;  m.emission_energy_multiplier = 2.4
+	_hover_ring.set_surface_override_material(0, m)
+	_hover_ring.visible = true
+
+
+func _clear_hover() -> void:
+	if _hover_ring != null and is_instance_valid(_hover_ring):
+		_hover_ring.visible = false
 
 
 func _on_slot_input(_cam2, event, _pos, _normal, _idx, slot_idx: int) -> void:
@@ -891,6 +983,7 @@ func _deselect_card() -> void:
 		t.tween_property(_selected_card_node, "position:y", 0.025, 0.15)
 	_has_selection = false;  _selected_card_node = null;  _selected_card_data = {}
 	_connector_slot1 = -1;  _clear_slot_highlights()
+	_dragging = false;  _maybe_drag = false;  _clear_hover()
 
 
 # ── Play element card ─────────────────────────────────────────
@@ -2068,6 +2161,7 @@ func _unlock_magic_cup(i: int) -> void:
 	var cyl := CylinderShape3D.new();  cyl.radius = 0.26;  cyl.height = 0.40
 	shape.shape = cyl;  shape.position.y = 0.10
 	area.add_child(shape)
+	area.set_meta("layer", "magic");  area.set_meta("idx", i)
 	area.input_event.connect(_on_layer_slot_input.bind("magic", i))
 	root.add_child(area)
 
