@@ -564,12 +564,12 @@ func _paint_shape(ctrl: Control, slots: Array, tint: Color) -> void:
 	var rows := maxr - minr
 	var sz := ctrl.size
 	var pad := 9.0
-	var pitch := min(
+	var pitch: float = min(
 		(sz.x - 2 * pad) / max(1.0, float(cols)),
 		(sz.y - 2 * pad) / max(1.0, float(rows)))
 	pitch = clamp(pitch, 6.0, 22.0)
-	var ox := (sz.x - cols * pitch) * 0.5
-	var oy := (sz.y - rows * pitch) * 0.5
+	var ox: float = (sz.x - cols * pitch) * 0.5
+	var oy: float = (sz.y - rows * pitch) * 0.5
 
 	var line_col := Color(0.45, 0.82, 0.95)
 	var ring_col := tint.darkened(0.55)
