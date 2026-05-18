@@ -1692,7 +1692,9 @@ func _cast_earth(entry: Dictionary) -> void:
 
 	_refresh_hp_labels()
 	_refresh_essence_label()
-	_clear_player_board()
+	# Board PERSISTS — a built formation can be recast every turn (once per
+	# turn, see _cast_locked). You only lose it by reclaiming its cards to
+	# feed the layers above. That trade-off is the game's core skill.
 	formation_label.text = ""
 	if opponent_hp <= 0:
 		_end_game(true)
@@ -1712,8 +1714,7 @@ func _cast_magic(entry: Dictionary) -> void:
 		_flash_damage_on_opponent(net, entry["title"])
 	if entry["name"] == "Conflux":
 		_unlock_spiritual()
-	_clear_layer_board("magic")
-	formation_label.text = ""
+	formation_label.text = ""   # board persists — recastable next turn
 	_refresh_hp_labels()
 	if opponent_hp <= 0: _end_game(true)
 
@@ -1734,8 +1735,7 @@ func _cast_spirit(entry: Dictionary) -> void:
 	opponent_shield -= absorbed
 	opponent_hp = max(0, opponent_hp - (dmg - absorbed))
 	_flash_damage_on_opponent(dmg - absorbed, entry["title"])
-	_clear_layer_board("spirit")
-	formation_label.text = ""
+	formation_label.text = ""   # board persists — recastable next turn
 	_refresh_hp_labels()
 	if opponent_hp <= 0: _end_game(true)
 
@@ -1881,8 +1881,7 @@ func _deal_player_hand() -> void:
 func _on_end_turn_pressed() -> void:
 	if _turn != "player" or _game_over: return
 	_deselect_card()
-	_clear_player_board()
-	_clear_active_formation()
+	# Board persists between turns — nothing is torn down here.
 	formation_label.text = ""
 	_set_buttons_enabled(false)
 	_turn = "opponent"
