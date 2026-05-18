@@ -499,6 +499,8 @@ func _setup_shape_list() -> void:
 
 
 func _shape_grid(slots: Array) -> String:
+	# Cups = "o", joined by connector lines to grid-adjacent cups:
+	#   o-o (horizontal)  |  (vertical)  \ /  (diagonal)
 	var cells := {}
 	var minr := 99;  var maxr := -1;  var minc := 99;  var maxc := -1
 	for i in slots:
@@ -506,11 +508,27 @@ func _shape_grid(slots: Array) -> String:
 		cells[Vector2i(r, c)] = true
 		minr = min(minr, r);  maxr = max(maxr, r)
 		minc = min(minc, c);  maxc = max(maxc, c)
+
+	var h := (maxr - minr) * 2 + 1
+	var w := (maxc - minc) * 2 + 1
+	var grid: Array = []
+	for _y in h:
+		var row: Array = []
+		for _x in w: row.append(" ")
+		grid.append(row)
+
+	for key in cells:
+		var r: int = key.x;  var c: int = key.y
+		var gy := (r - minr) * 2;  var gx := (c - minc) * 2
+		grid[gy][gx] = "o"
+		if cells.has(Vector2i(r, c + 1)):     grid[gy][gx + 1]   = "-"
+		if cells.has(Vector2i(r + 1, c)):     grid[gy + 1][gx]   = "|"
+		if cells.has(Vector2i(r + 1, c + 1)): grid[gy + 1][gx + 1] = "\\"
+		if cells.has(Vector2i(r + 1, c - 1)): grid[gy + 1][gx - 1] = "/"
+
 	var out := ""
-	for r in range(minr, maxr + 1):
-		for c in range(minc, maxc + 1):
-			out += "■" if cells.has(Vector2i(r, c)) else "·"
-		out += "\n"
+	for y in h:
+		out += "".join(grid[y]) + "\n"
 	return out
 
 
