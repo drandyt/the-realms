@@ -117,8 +117,13 @@ var _layer_tab_btns: Dictionary = {}   # "ground"/"magic"/"spirit" -> Button
 const START_LIFE := 100
 var player_hp   := START_LIFE
 var opponent_hp := START_LIFE
-var player_shield   := 0
-var opponent_shield := 0
+# Positional lane shields (replaces a single shield pool). Each ward owns
+# a set of board columns and only blocks attacks whose columns overlap.
+# Build attacks in unguarded columns to bypass.
+var player_wards: Array   = []   # [{ key, cols, remaining, cap, label, visual }]
+var opponent_wards: Array = []
+# Lazy cache: formation name → relative shape (translates anywhere on board).
+var _ground_shape_cache: Dictionary = {}
 
 var _cam: Camera3D
 var deck_label: Label
@@ -1587,7 +1592,7 @@ func _scan_layer(layer: String, list: Array, contents: Array, conns: Array,
 
 func _scan_formations() -> void:
 	_spells = []
-	_scan_layer("ground", FORMATIONS, slot_contents, connections, null)
+	_scan_ground()   # pattern-match-anywhere on Ground (every valid placement)
 	var any_magic := magic_unlocked.has(true)
 	if any_magic:
 		_scan_layer("magic", MAGIC_FORMATIONS, m_slot_contents,
@@ -1652,6 +1657,165 @@ func _cast_spell(entry: Dictionary) -> void:
 	_refresh_spells()
 
 
+# ── Lane shields (wards) ──────────────────────────────────────
+
+func _cols_of(slots: Array) -> Array:
+	var cols: Array = []
+	for i in slots:
+		var c: int = int(i) % COLS
+		if c not in cols: cols.append(c)
+	cols.sort()
+	return cols
+
+
+func _ward_total(wards: Array) -> int:
+	var t := 0
+	for w in wards: t += int(w["remaining"])
+	return t
+
+
+# Route incoming damage through any defender wards whose columns overlap
+# the attack's columns. Each ward soaks roughly its column-share of the
+# damage; leftover pours through to HP. "Bypass" = attack in columns the
+# defender hasn't shielded.
+func _route_attack(wards: Array, attacker_cols: Array, damage: int) -> int:
+	if attacker_cols.is_empty() or damage <= 0: return damage
+	var remaining: int = damage
+	var n_attack: int = attacker_cols.size()
+	for w in wards:
+		if remaining <= 0: break
+		var overlap := 0
+		for c in attacker_cols:
+			if c in w["cols"]: overlap += 1
+		if overlap == 0: continue
+		var slice: int = int(round(damage * overlap / float(n_attack)))
+		var blocked: int = min(slice, int(w["remaining"]))
+		blocked = min(blocked, remaining)
+		w["remaining"] = int(w["remaining"]) - blocked
+		remaining -= blocked
+	_prune_wards(wards)
+	return max(remaining, 0)
+
+
+func _prune_wards(wards: Array) -> void:
+	var i: int = wards.size() - 1
+	while i >= 0:
+		if int(wards[i]["remaining"]) <= 0:
+			var v = wards[i].get("visual")
+			if v != null and is_instance_valid(v): v.queue_free()
+			wards.remove_at(i)
+		i -= 1
+
+
+# Same key (same formation at the same columns) refreshes; otherwise
+# a new ward is stood up. side_sign: +1 player, -1 opponent.
+func _grant_ward(wards: Array, key: String, cols: Array, cap: int,
+		label: String, side_sign: int, tint: Color) -> void:
+	for w in wards:
+		if w["key"] == key:
+			w["remaining"] = max(int(w["remaining"]), cap)
+			w["cap"] = max(int(w["cap"]), cap)
+			return
+	var visual: Node3D = _spawn_ward_visual(side_sign, cols, tint)
+	wards.append({
+		"key": key, "cols": cols, "remaining": cap, "cap": cap,
+		"label": label, "visual": visual,
+	})
+
+
+# Translucent slab hovering over the shielded columns on that side.
+func _spawn_ward_visual(side_sign: int, cols: Array, tint: Color) -> Node3D:
+	var start_x: float = -(COLS - 1) * SLOT_GAP_X / 2.0
+	var lo: int = int(cols.min())
+	var hi: int = int(cols.max())
+	var cx: float = start_x + ((lo + hi) * 0.5) * SLOT_GAP_X
+	var w: float  = (hi - lo + 1) * SLOT_GAP_X
+	var depth: float = SLOT_GAP_Z * (ROWS - 1) + 0.5
+	var cz: float = side_sign * (SLOT_NEAR_Z + (ROWS - 1) * SLOT_GAP_Z * 0.5)
+
+	var root := Node3D.new()
+	root.position = Vector3(cx, 0.36, cz)
+	add_child(root)
+
+	var slab := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = Vector3(w - 0.05, 0.04, depth)
+	slab.mesh = bm
+	var mat := StandardMaterial3D.new()
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.albedo_color = Color(tint.r, tint.g, tint.b, 0.28)
+	mat.emission_enabled = true
+	mat.emission = tint
+	mat.emission_energy_multiplier = 1.6
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	slab.set_surface_override_material(0, mat)
+	root.add_child(slab)
+
+	var t := create_tween().set_loops() \
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	t.tween_property(mat, "emission_energy_multiplier", 2.4, 0.9)
+	t.tween_property(mat, "emission_energy_multiplier", 1.0, 0.9)
+	return root
+
+
+# Relative shape of a formation, so we can test every translation.
+func _ground_shape(f: Dictionary) -> Dictionary:
+	var fname: String = f["name"]
+	if _ground_shape_cache.has(fname): return _ground_shape_cache[fname]
+	var min_r: int =  99;  var min_c: int =  99
+	var max_r: int = -1;   var max_c: int = -1
+	var pts: Array = []
+	for i in f["slots"]:
+		var r: int = int(i) / COLS
+		var c: int = int(i) % COLS
+		pts.append(Vector2i(r, c))
+		min_r = min(min_r, r);  max_r = max(max_r, r)
+		min_c = min(min_c, c);  max_c = max(max_c, c)
+	var shape: Array = []
+	for p in pts: shape.append(Vector2i(p.x - min_r, p.y - min_c))
+	var data: Dictionary = {"shape": shape, "h": max_r - min_r + 1,
+							"w": max_c - min_c + 1}
+	_ground_shape_cache[fname] = data
+	return data
+
+
+# Pattern-match-anywhere: a Ground formation can be cast at ANY position
+# on the board where the shape fits, is filled, and has a connection
+# inside. Every valid placement is a separate spell entry (so the same
+# shape built at two positions is two configurations, each with its own
+# column footprint).
+func _scan_ground() -> void:
+	for f in FORMATIONS:
+		var sh: Dictionary = _ground_shape(f)
+		var shape: Array = sh["shape"]
+		var h: int = sh["h"];  var w: int = sh["w"]
+		for r0 in range(ROWS - h + 1):
+			for c0 in range(COLS - w + 1):
+				var candidate: Array = []
+				for p in shape:
+					candidate.append((r0 + int(p.x)) * COLS + (c0 + int(p.y)))
+				var ok := true
+				for i in candidate:
+					if i >= slot_contents.size() or slot_contents[i] == null:
+						ok = false;  break
+				if not ok: continue
+				var linked := false
+				for conn in connections:
+					if conn["a"] in candidate and conn["b"] in candidate:
+						linked = true;  break
+				if not linked: continue
+				var fname: String = f["name"]
+				var dom: String = _dominant_of(slot_contents, candidate)
+				var title: String = SPELLS.get(fname + "_" + dom,
+					dom.capitalize() + " " + fname)
+				var sig: Array = candidate.duplicate();  sig.sort()
+				_spells.append({
+					"layer": "ground", "name": fname, "slots": candidate,
+					"dom": dom, "title": title, "effect": f["effect"],
+					"key": "ground:%s:%s" % [fname, str(sig)],
+				})
+
+
 func _cast_ground(entry: Dictionary) -> void:
 	var fname: String = entry["name"]
 	var base_dmg: int = FORMATION_BASE_DAMAGE.get(fname, 0)
@@ -1672,14 +1836,16 @@ func _cast_ground(entry: Dictionary) -> void:
 	shield = int(round(shield * dmg_mult))
 	player_essence += geom * ess_mult
 
+	var attack_cols: Array = _cols_of(fslots)
 	if damage > 0:
-		var absorbed: int = min(opponent_shield, damage)
-		opponent_shield -= absorbed
-		var net: int = damage - absorbed
+		var net: int = _route_attack(opponent_wards, attack_cols, damage)
 		opponent_hp = max(0, opponent_hp - net)
 		_flash_damage_on_opponent(net, spell_caption)
 	if shield > 0:
-		player_shield += shield
+		# Ward keyed to this formation's columns — recasting refreshes,
+		# building the same shape elsewhere stands up a second ward.
+		_grant_ward(player_wards, entry["key"], attack_cols, shield,
+			spell_caption, 1, Color(0.30, 0.75, 1.0))
 		_flash_shield_on_player(shield, spell_caption)
 	if cast_power > 0:
 		_flash_essence(geom * ess_mult)
@@ -1701,9 +1867,7 @@ func _cast_magic(entry: Dictionary) -> void:
 		if mf["name"] == entry["name"]: base = int(mf["dmg"]);  break
 	var dmg := int(round(base * _layer_dominant_mult("magic", f)))
 	if dmg > 0:
-		var absorbed: int = min(opponent_shield, dmg)
-		opponent_shield -= absorbed
-		var net: int = dmg - absorbed
+		var net: int = _route_attack(opponent_wards, _cols_of(entry["slots"]), dmg)
 		opponent_hp = max(0, opponent_hp - net)
 		_flash_damage_on_opponent(net, entry["title"])
 	if entry["name"] == "Conflux":
@@ -1725,10 +1889,9 @@ func _cast_spirit(entry: Dictionary) -> void:
 	for sf in SPIRIT_FORMATIONS:
 		if sf["name"] == entry["name"]: base = int(sf["dmg"]);  break
 	var dmg := int(round(base * _layer_dominant_mult("spirit", f)))
-	var absorbed: int = min(opponent_shield, dmg)
-	opponent_shield -= absorbed
-	opponent_hp = max(0, opponent_hp - (dmg - absorbed))
-	_flash_damage_on_opponent(dmg - absorbed, entry["title"])
+	var net: int = _route_attack(opponent_wards, _cols_of(entry["slots"]), dmg)
+	opponent_hp = max(0, opponent_hp - net)
+	_flash_damage_on_opponent(net, entry["title"])
 	formation_label.text = ""   # board persists — recastable next turn
 	_refresh_hp_labels()
 	if opponent_hp <= 0: _end_game(true)
@@ -1776,8 +1939,8 @@ func _apply_layer_dim() -> void:
 
 
 func _refresh_hp_labels() -> void:
-	hp_opp_label.text    = "OPPONENT  LIFE %d   ⛨ %d" % [opponent_hp, opponent_shield]
-	hp_player_label.text = "YOU       LIFE %d   ⛨ %d" % [player_hp,   player_shield]
+	hp_opp_label.text    = "OPPONENT  LIFE %d   ⛨ %d" % [opponent_hp, _ward_total(opponent_wards)]
+	hp_player_label.text = "YOU       LIFE %d   ⛨ %d" % [player_hp,   _ward_total(player_wards)]
 
 
 func _flash_damage_on_opponent(dmg: int, label: String) -> void:
@@ -2004,6 +2167,7 @@ func _opp_best_formation() -> Dictionary:
 			best = {
 				"formation": formation, "dominant": dominant,
 				"damage": damage, "shield": shield,
+				"slots": fslots,
 				"spell": SPELLS.get(spell_key, dominant.capitalize() + " " + fname),
 			}
 	return best
@@ -2012,14 +2176,16 @@ func _opp_best_formation() -> Dictionary:
 func _ai_cast(best: Dictionary) -> void:
 	var damage: int = best["damage"]
 	var shield: int = best["shield"]
+	var fslots: Array = best.get("slots", [])
+	var cols: Array = _cols_of(fslots)
 	if damage > 0:
-		var absorbed: int = min(player_shield, damage)
-		player_shield -= absorbed
-		var net: int = damage - absorbed
+		var net: int = _route_attack(player_wards, cols, damage)
 		player_hp = max(0, player_hp - net)
 		_flash_damage_on_player(net, best["spell"])
 	if shield > 0:
-		opponent_shield += shield
+		var key: String = "ai:%s:%s" % [str(best["formation"]["name"]), str(fslots)]
+		_grant_ward(opponent_wards, key, cols, shield, best["spell"],
+			-1, Color(1.0, 0.55, 0.25))
 	_refresh_hp_labels()
 	if player_hp <= 0:
 		_end_game(false)
