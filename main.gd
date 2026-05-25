@@ -34,42 +34,37 @@ const CONNECTOR: Dictionary = {
 }
 
 # ── Formation definitions ─────────────────────────────────────
-# slots: which player slot indices must ALL be filled + connected
-# Earth shapes are MUNDANE and ORTHOGONAL only (no diagonals — that is
-# Magic's domain). idx = row*COLS + col, rows 0..3, built centre-board.
+# slots: which player slot indices must ALL be filled + connected.
+# Ground shapes are MUNDANE: orthogonal-only adjacency and a single
+# connected shape — no diagonals, no disjoint pieces. (Diagonals and
+# free-form links are Magic's domain.) idx = row*COLS + col on the
+# 12-wide × 4-deep board, built centre-board.
+#
+# Simplified set: lines (4 or 6), one square, one rectangle. Six
+# clean primitives that read at a glance.
 const FORMATIONS: Array[Dictionary] = [
-	{ "name": "Bastion",  "slots": [28,29,30,31,40,41,42,43], "effect": "Full shield — absorbs next attack" },
-	{ "name": "Tide",     "slots": [27,28,29,30,31,32],       "effect": "Damage over time" },
-	{ "name": "Crown",    "slots": [16,17,18,19,29,41],       "effect": "Buff all connected slots next turn" },
-	{ "name": "Arrow",    "slots": [5,6,7,18,30,42],          "effect": "Focus strike — bonus vs unshielded" },
-	{ "name": "Wedge",    "slots": [16,28,40,41,42],          "effect": "Flanking — bypasses shield edge" },
-	{ "name": "Crucible", "slots": [29,30,41,42],             "effect": "Double merged element power" },
-	{ "name": "Wings",    "slots": [28,40,33,45],             "effect": "Hit enemy outer slots" },
-	{ "name": "Rampart",  "slots": [40,41,42,43],             "effect": "Block incoming damage this round" },
-	{ "name": "Volley",   "slots": [4,5,6,7],                 "effect": "Strike all enemy front slots" },
-	{ "name": "Lance",    "slots": [6,18,30,42],              "effect": "Pierce — ignores shields" },
+	{ "name": "Volley",   "slots": [4,5,6,7],                 "effect": "Strike all enemy front slots" },           # — — — — back-row line of 4
+	{ "name": "Rampart",  "slots": [40,41,42,43],             "effect": "Block incoming damage this round" },     # — — — — front-row line of 4
+	{ "name": "Lance",    "slots": [6,18,30,42],              "effect": "Pierce — ignores shields" },             #  |  vertical line of 4
+	{ "name": "Tide",     "slots": [27,28,29,30,31,32],       "effect": "Damage over time" },                     # — — — — — — long line of 6
+	{ "name": "Crucible", "slots": [29,30,41,42],             "effect": "Double merged element power" },          # ▢ 2×2 square
+	{ "name": "Bastion",  "slots": [28,29,30,31,40,41,42,43], "effect": "Full shield — absorbs next attack" },    # ▭ 2×4 block
 ]
 
-# Spell name = formation + dominant element
+# Spell name = formation + dominant element. Deck only draws earth/air/water/fire,
+# but a few other elements are kept here for when the pool widens.
 const SPELLS: Dictionary = {
-	"Rampart_earth":  "Stone Wall",    "Rampart_water":  "Tidal Barrier",
-	"Rampart_life":   "Root Ward",     "Rampart_light":  "Holy Rampart",
-	"Arrow_fire":     "Inferno Strike","Arrow_rage":      "Wrath Bolt",
-	"Arrow_air":      "Gale Dart",     "Arrow_energy":   "Thunder Arrow",
-	"Volley_air":     "Storm Shower",  "Volley_energy":  "Static Burst",
-	"Volley_fire":    "Fire Shower",   "Volley_light":   "Radiant Volley",
+	"Volley_air":     "Storm Shower",   "Volley_energy":  "Static Burst",
+	"Volley_fire":    "Fire Shower",    "Volley_light":   "Radiant Volley",
+	"Rampart_earth":  "Stone Wall",     "Rampart_water":  "Tidal Barrier",
+	"Rampart_life":   "Root Ward",      "Rampart_light":  "Holy Rampart",
 	"Lance_rage":     "Berserker Spike","Lance_light":    "Judgement Beam",
-	"Lance_energy":   "Plasma Lance",  "Lance_fire":     "Flame Lance",
-	"Crucible_fire":  "Firestorm",     "Crucible_water": "Mud Lock",
-	"Crucible_life":  "Bloom Surge",   "Crucible_energy":"Overcharge",
-	"Crown_time":     "Timestop",      "Crown_energy":   "Overcharge Crown",
-	"Crown_light":    "Solar Crown",   "Crown_life":     "Life Crown",
-	"Wings_air":      "Hurricane Wings","Wings_light":   "Radiant Wings",
-	"Wings_fire":     "Phoenix Wings", "Wings_energy":   "Storm Wings",
-	"Wedge_rage":     "Fury Wedge",    "Wedge_water":    "Riptide",
-	"Tide_water":     "Undertow",      "Tide_time":      "Entropy Flow",
-	"Bastion_earth":  "Iron Fortress", "Bastion_light":  "Holy Aegis",
-	"Bastion_water":  "Flood Bastion", "Bastion_life":   "Living Fortress",
+	"Lance_energy":   "Plasma Lance",   "Lance_fire":     "Flame Lance",
+	"Tide_water":     "Undertow",       "Tide_time":      "Entropy Flow",
+	"Crucible_fire":  "Firestorm",      "Crucible_water": "Mud Lock",
+	"Crucible_life":  "Bloom Surge",    "Crucible_energy":"Overcharge",
+	"Bastion_earth":  "Iron Fortress",  "Bastion_light":  "Holy Aegis",
+	"Bastion_water":  "Flood Bastion",  "Bastion_life":   "Living Fortress",
 }
 
 # ── State ─────────────────────────────────────────────────────
@@ -116,8 +111,8 @@ var _spell_list_vbox: VBoxContainer
 var _spell_panel: PanelContainer
 
 # Which layer the player is currently acting on. Others are dimmed + inert.
-var _active_layer := "earth"
-var _layer_tab_btns: Dictionary = {}   # "earth"/"magic"/"spirit" -> Button
+var _active_layer := "ground"
+var _layer_tab_btns: Dictionary = {}   # "ground"/"magic"/"spirit" -> Button
 
 const START_LIFE := 100
 var player_hp   := START_LIFE
@@ -159,10 +154,10 @@ var player_essence   := 0
 var opponent_essence := 0
 var spirit_unlocked  := false
 
-# Magic cups are unlocked (permanently) by enclosing Earth areas with
-# connectors. magic_unlocked[i] == earth cup i has its magic cup above it.
+# Magic cups are unlocked (permanently) by enclosing Ground areas with
+# connectors. magic_unlocked[i] == ground cup i has its magic cup above it.
 var magic_unlocked: Array = []
-var connector_graph: Dictionary = {}   # earth idx -> Array[int] neighbour idxs
+var connector_graph: Dictionary = {}   # ground idx -> Array[int] neighbour idxs
 
 # Cast power dial: 0 Full (100% dmg, 0 build) · 1 Half (50% dmg, +build) · 2 Channel (0 dmg, ++build)
 var cast_power := 0
@@ -204,7 +199,7 @@ func _ready() -> void:
 	_deal_opponent_hand()
 
 	# Magic / Spiritual cups do NOT exist at start — they are unlocked
-	# permanently when you enclose an area with connectors on Earth.
+	# permanently when you enclose an area with connectors on Ground.
 	var n := player_slots.size()
 	magic_player_slots.resize(n);  magic_player_slots.fill(null)
 	magic_opp_slots.resize(n);     magic_opp_slots.fill(null)
@@ -290,7 +285,7 @@ func _add_slot_area(slot_root: Node3D, idx: int) -> void:
 	var cyl := CylinderShape3D.new();  cyl.radius = 0.32;  cyl.height = 0.45
 	shape.shape = cyl;  shape.position.y = 0.12
 	area.add_child(shape)
-	area.set_meta("layer", "earth");  area.set_meta("idx", idx)
+	area.set_meta("layer", "ground");  area.set_meta("idx", idx)
 	area.input_event.connect(_on_slot_input.bind(idx))
 	slot_root.add_child(area)
 
@@ -480,7 +475,7 @@ func _setup_ui() -> void:
 # Right-edge layer selector. Tap a tab to act on that layer; the others
 # dim out so the board is not crowded.
 func _setup_layer_tabs() -> void:
-	var defs := [["earth", "EARTH", Color(0.55,0.90,0.55)],
+	var defs := [["ground","GROUND",Color(0.55,0.90,0.55)],
 				 ["magic", "MAGIC", Color(0.78,0.50,1.0)],
 				 ["spirit","SPIRIT",Color(1.0,0.86,0.45)]]
 	for i in defs.size():
@@ -497,7 +492,7 @@ func _setup_layer_tabs() -> void:
 		b.pressed.connect(_set_active_layer.bind(key))
 		canvas.add_child(b)
 		_layer_tab_btns[key] = b
-	_set_active_layer("earth")
+	_set_active_layer("ground")
 
 
 # Right-side list of every spell you can currently cast. Click to cast.
@@ -551,7 +546,7 @@ func _setup_shape_list() -> void:
 	vbox.custom_minimum_size = Vector2(326, 0)
 	scroll.add_child(vbox)
 
-	_add_shape_section(vbox, "EARTH  ·  orthogonal (mundane)", FORMATIONS,
+	_add_shape_section(vbox, "GROUND  ·  orthogonal (mundane)", FORMATIONS,
 		Color(0.55, 0.90, 0.55), true)
 	_add_shape_section(vbox, "MAGIC  ·  diagonals allowed", MAGIC_FORMATIONS,
 		Color(0.78, 0.50, 1.0), false)
@@ -560,7 +555,7 @@ func _setup_shape_list() -> void:
 
 
 func _add_shape_section(vbox: VBoxContainer, title: String, list: Array,
-		tint: Color, earth: bool) -> void:
+		tint: Color, is_ground: bool) -> void:
 	var hdr := Label.new()
 	hdr.text = title
 	hdr.add_theme_font_size_override("font_size", 16)
@@ -570,7 +565,7 @@ func _add_shape_section(vbox: VBoxContainer, title: String, list: Array,
 	for f in list:
 		var fn: String = f["name"]
 		var tag := ""
-		if earth:
+		if is_ground:
 			var dmg: int = FORMATION_BASE_DAMAGE.get(fn, 0)
 			var shd: int = FORMATION_SHIELD.get(fn, 0)
 			tag = ("%d dmg" % dmg) if dmg > 0 else \
@@ -726,7 +721,7 @@ func _build_book_text() -> String:
 	var s := "THE REALMS — SPELLBOOK\n"
 	s += "════════════════════════\n\n"
 	s += "HOW TO PLAY\n"
-	s += "• %d-wide x %d-deep Earth board per side.\n" % [COLS, ROWS]
+	s += "• %d-wide x %d-deep Ground board per side.\n" % [COLS, ROWS]
 	s += "• Click an element card, then a silver cup.\n"
 	s += "• Play a CONNECTOR, then two adjacent cups.\n"
 	s += "• Fill + connect a formation to arm it, CAST.\n"
@@ -738,9 +733,9 @@ func _build_book_text() -> String:
 	s += "• Start LIFE: %d each.\n\n" % START_LIFE
 	s += "THE THREE LAYERS\n"
 	s += "────────────────────────\n"
-	s += "EARTH (table): attack/defence formations.\n"
+	s += "GROUND (table): attack/defence formations.\n"
 	s += "MAGIC (mid, purple): NO cups at start.\n"
-	s += "  Enclose an area with connectors on Earth\n"
+	s += "  Enclose an area with connectors on Ground\n"
 	s += "  and the whole block (border + inside) of\n"
 	s += "  magic cups appears above — PERMANENTLY.\n"
 	s += "  Magic connectors CURVE: link ANY 2 cups.\n"
@@ -749,7 +744,7 @@ func _build_book_text() -> String:
 	s += "  Sealed until you form CONFLUX on Magic.\n\n"
 	s += "ESSENCE — feeding the climb\n"
 	s += "────────────────────────\n"
-	s += "Use the Cast Power dial before an Earth cast:\n"
+	s += "Use the Cast Power dial before a Ground cast:\n"
 	s += "• FULL   — full damage, no Essence.\n"
 	s += "• HALF   — half damage, Essence = shape size.\n"
 	s += "• CHANNEL— no damage, double Essence.\n"
@@ -872,8 +867,8 @@ const _DRAG_THRESHOLD := 8.0
 func _input(event: InputEvent) -> void:
 	if _turn != "player" or _game_over: return
 	if not _has_selection: return
-	# Drag-to-board is Earth-only; Magic/Spirit place via click on their cups.
-	if _active_layer != "earth": return
+	# Drag-to-board is Ground-only; Magic/Spirit place via click on their cups.
+	if _active_layer != "ground": return
 
 	if event is InputEventMouseMotion:
 		if _maybe_drag and (event.button_mask & MOUSE_BUTTON_MASK_LEFT) \
@@ -881,7 +876,7 @@ func _input(event: InputEvent) -> void:
 			_dragging = true
 		var w = _world_on_board(event.position)
 		if w != null:
-			var idx := _earth_slot_at(w)
+			var idx := _ground_slot_at(w)
 			if _dragging and is_instance_valid(_selected_card_node):
 				_selected_card_node.position = Vector3(w.x, 0.34, w.z)
 			_update_hover(idx)
@@ -890,7 +885,7 @@ func _input(event: InputEvent) -> void:
 			and not event.pressed:
 		if _dragging:
 			var w = _world_on_board(event.position)
-			var idx := _earth_slot_at(w) if w != null else -1
+			var idx := _ground_slot_at(w) if w != null else -1
 			_dragging = false;  _maybe_drag = false
 			_clear_hover()
 			if _selected_card_data.get("type") == "connector":
@@ -924,7 +919,7 @@ func _world_on_board(mpos: Vector2):
 	return plane.intersects_ray(o, d)
 
 
-func _earth_slot_at(world) -> int:
+func _ground_slot_at(world) -> int:
 	if world == null: return -1
 	var start_x := -(COLS - 1) * SLOT_GAP_X / 2.0
 	var fcol: float = (world.x - start_x) / SLOT_GAP_X
@@ -971,7 +966,7 @@ func _on_slot_input(_cam2, event, _pos, _normal, _idx, slot_idx: int) -> void:
 	if not (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT):
 		return
 	if _turn != "player" or _game_over: return
-	if _active_layer != "earth": return
+	if _active_layer != "ground": return
 	if not _has_selection:
 		_take_back_from_slot(slot_idx)
 		return
@@ -1378,7 +1373,7 @@ func _slot_rc(idx: int) -> Vector2i:
 
 
 func _is_adjacent(a: int, b: int) -> bool:
-	# Earth: ORTHOGONAL neighbours only — no diagonals (mundane).
+	# Ground: ORTHOGONAL neighbours only — no diagonals (mundane).
 	if a == b: return false
 	var ra := _slot_rc(a);  var rb := _slot_rc(b)
 	return abs(ra.x - rb.x) + abs(ra.y - rb.y) == 1
@@ -1517,9 +1512,8 @@ func _apply_merge(idx_a: int, idx_b: int, stream_mat: StandardMaterial3D) -> voi
 # ── Cast / damage ─────────────────────────────────────────────
 
 const FORMATION_BASE_DAMAGE: Dictionary = {
-	"Lance": 8, "Arrow": 10, "Volley": 12, "Wedge": 10,
-	"Wings": 9, "Crucible": 15, "Tide": 7,
-	"Crown": 0, "Rampart": 0, "Bastion": 0,
+	"Volley": 12, "Lance": 10, "Tide": 7, "Crucible": 15,
+	"Rampart": 0, "Bastion": 0,
 }
 
 const FORMATION_SHIELD: Dictionary = {
@@ -1579,7 +1573,7 @@ func _scan_layer(layer: String, list: Array, contents: Array, conns: Array,
 		var fname: String = f["name"]
 		var dom := _dominant_of(contents, fslots)
 		var title: String
-		if layer == "earth":
+		if layer == "ground":
 			title = SPELLS.get(fname + "_" + dom, dom.capitalize() + " " + fname)
 		else:
 			title = "%s %s" % [dom.capitalize(), fname]
@@ -1593,7 +1587,7 @@ func _scan_layer(layer: String, list: Array, contents: Array, conns: Array,
 
 func _scan_formations() -> void:
 	_spells = []
-	_scan_layer("earth", FORMATIONS, slot_contents, connections, null)
+	_scan_layer("ground", FORMATIONS, slot_contents, connections, null)
 	var any_magic := magic_unlocked.has(true)
 	if any_magic:
 		_scan_layer("magic", MAGIC_FORMATIONS, m_slot_contents,
@@ -1651,14 +1645,14 @@ func _cast_spell(entry: Dictionary) -> void:
 	if _turn != "player" or _game_over: return
 	if _cast_locked.has(entry["key"]): return
 	match entry["layer"]:
-		"earth":  _cast_earth(entry)
+		"ground": _cast_ground(entry)
 		"magic":  _cast_magic(entry)
 		"spirit": _cast_spirit(entry)
 	_cast_locked[entry["key"]] = true
 	_refresh_spells()
 
 
-func _cast_earth(entry: Dictionary) -> void:
+func _cast_ground(entry: Dictionary) -> void:
 	var fname: String = entry["name"]
 	var base_dmg: int = FORMATION_BASE_DAMAGE.get(fname, 0)
 	var mult: float   = ELEMENT_MULTIPLIER.get(entry["dom"], 1.0)
@@ -1767,10 +1761,10 @@ func _dim_roots(roots: Array, dim: bool) -> void:
 
 
 func _apply_layer_dim() -> void:
-	_dim_roots(player_slots,   _active_layer != "earth")
-	_dim_roots(opponent_slots, _active_layer != "earth")
+	_dim_roots(player_slots,   _active_layer != "ground")
+	_dim_roots(opponent_slots, _active_layer != "ground")
 	for conn in connections:
-		_dim_roots([conn.get("bridge")], _active_layer != "earth")
+		_dim_roots([conn.get("bridge")], _active_layer != "ground")
 	_dim_roots(magic_player_slots, _active_layer != "magic")
 	_dim_roots(magic_opp_slots,    _active_layer != "magic")
 	for conn in m_connections:
@@ -1912,7 +1906,7 @@ func _ai_turn() -> void:
 	_clear_opponent_board()
 	await get_tree().create_timer(0.4).timeout
 
-	# Pick a real offensive Earth formation to build.
+	# Pick a real offensive Ground formation to build.
 	var offensive: Array = []
 	for f in FORMATIONS:
 		if FORMATION_BASE_DAMAGE.get(f["name"], 0) > 0:
@@ -2259,7 +2253,7 @@ func _clear_layer_board(layer: String) -> void:
 
 
 func _flash_essence_warn() -> void:
-	formation_label.text = "Not enough ✦ Essence — cast Earth spells (Half/Channel) to bank it"
+	formation_label.text = "Not enough ✦ Essence — cast Ground spells (Half/Channel) to bank it"
 
 
 # ── Enclosure → Magic-cup unlock ──────────────────────────────
